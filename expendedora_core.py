@@ -1,10 +1,8 @@
-from expendedora_gui import ExpendedoraGUI
 from gpio_sim import GPIO  # import RPi.GPIO as GPIO  # Descomentar para usar en hardware real
 import time
 import requests
 import sqlite3
 import threading
-import tkinter as tk
 import json
 import os
 from datetime import datetime
@@ -157,41 +155,49 @@ def enviar_cierre_diario():
 # --- CONTROL DEL MOTOR Y CONTEO DE FICHAS ---
 def controlar_motor():
     """
-    Hilo que controla el motor basándose en fichas_restantes
+    Hilo que controla el motor basándose en fichas_restantes.
+    - Motor activo si fichas_restantes > 0
+    - Motor apagado si fichas_restantes == 0
+    - Sensor cuenta fichas que salen y decrementa fichas_restantes
     """
     global motor_activo, fichas_restantes, fichas_expendidas
-    
+
     estado_anterior_sensor = GPIO.input(ENTHOPER)
-    
+
     while True:
+        # Control del motor basado en fichas_restantes
         with fichas_lock:
-            # Activar motor si hay fichas pendientes
-            if fichas_restantes > 0 and not motor_activo:
-                GPIO.output(MOTOR_PIN, GPIO.HIGH)
-                motor_activo = True
-                print(f"Motor encendido - Fichas pendientes: {fichas_restantes}")
-            
-            # Apagar motor si no hay fichas pendientes
-            elif fichas_restantes <= 0 and motor_activo:
-                GPIO.output(MOTOR_PIN, GPIO.LOW)
-                motor_activo = False
-                print("Motor apagado - Todas las fichas expendidas")
-        
-        # Detectar fichas que salen (flanco descendente)
+            if fichas_restantes > 0:
+                # Hay fichas pendientes - Motor debe estar encendido
+                if not motor_activo:
+                    GPIO.output(MOTOR_PIN, GPIO.HIGH)
+                    motor_activo = True
+                    print(f"[MOTOR ON] Fichas pendientes: {fichas_restantes}")
+            else:
+                # No hay fichas pendientes - Motor debe estar apagado
+                if motor_activo:
+                    GPIO.output(MOTOR_PIN, GPIO.LOW)
+                    motor_activo = False
+                    print("[MOTOR OFF] Todas las fichas expendidas")
+
+        # Detectar fichas que salen del hopper (flanco descendente)
         estado_actual_sensor = GPIO.input(ENTHOPER)
-        
+
         if estado_anterior_sensor == GPIO.HIGH and estado_actual_sensor == GPIO.LOW:
+            # Sensor detectó una ficha saliendo
             with fichas_lock:
                 if fichas_restantes > 0:
                     fichas_restantes -= 1
                     fichas_expendidas += 1
-                    print(f"Ficha expendida - Restantes: {fichas_restantes} | Expendidas: {fichas_expendidas}")
-                    
+                    print(f"[FICHA EXPENDIDA] Restantes: {fichas_restantes} | Total expendidas: {fichas_expendidas}")
+
                     # Actualizar registro
                     actualizar_registro("ficha", 1)
-        
+                else:
+                    print("[ADVERTENCIA] Sensor detectó ficha pero contador ya está en 0")
+
         estado_anterior_sensor = estado_actual_sensor
-        time.sleep(0.01)  # 10ms de delay para estabilidad
+        time.sleep(0.01)  # 10ms para estabilidad del sensor
 
 # --- FUNCIÓN PARA AGREGAR FICHAS (LLAMADA DESDE LA GUI) ---
 def agregar_fichas(cantidad):
@@ -258,23 +264,20 @@ def expender_fichas(cantidad):
     return agregar_fichas(cantidad)
 
 # --- PROGRAMA PRINCIPAL ---
-def main():
+def iniciar_sistema():
+    """Inicializa el sistema de control de motor (sin GUI)"""
     init_db()
     enviar_pulso()
-    
+
     # Iniciar hilo de control del motor
     motor_thread = threading.Thread(target=controlar_motor, daemon=True)
     motor_thread.start()
     print("Sistema de control de motor iniciado")
 
-    # Iniciar la interfaz gráfica
-    root = tk.Tk()
-    app = ExpendedoraGUI(root, "usuario")
-    root.mainloop()
-    
-    # Apagar motor al cerrar
+    return motor_thread
+
+def detener_sistema():
+    """Apaga el motor y limpia GPIO"""
     GPIO.output(MOTOR_PIN, GPIO.LOW)
     GPIO.cleanup()
-
-if __name__ == "__main__":
-    main()
+    print("Sistema detenido")

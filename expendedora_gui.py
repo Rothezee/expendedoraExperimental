@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 import requests
 from User_management import UserManagement
+import expendedora_core as core
 
 url = "http://192.168.1.33/esp32_project/expendedora/insert_close_expendedora.php"  # URL DE CIERRES y subcierres
 urlDatos = "http://192.168.1.33/esp32_project/expendedora/insert_data_expendedora.php"  # URL DE REPORTES
@@ -148,6 +149,7 @@ class ExpendedoraGUI:
         self.footer_label.pack(pady=5)
 
         self.actualizar_fecha_hora()  # Llamar a la función para mostrar la fecha y hora
+        self.actualizar_desde_hardware()  # Iniciar actualización desde el hardware
 
         self.mostrar_frame(self.main_frame)
 
@@ -250,33 +252,30 @@ class ExpendedoraGUI:
         fichas_window.title("Elegir cantidad de fichas")
         fichas_window.geometry("300x150")
         fichas_window.configure(bg="#ffffff")
-        
+
         tk.Label(fichas_window, text="Cantidad de fichas a expender:", bg="#ffffff", font=("Arial", 12)).pack(pady=10)
         fichas_entry = tk.Entry(fichas_window, font=("Arial", 12), bd=2, relief="solid")
         fichas_entry.pack(pady=5, padx=10, fill='x')
-        
+
         def confirmar_fichas():
             try:
                 cantidad_fichas = int(fichas_entry.get())
-                self.contadores["fichas_restantes"] += cantidad_fichas  # Sumar fichas en lugar de asignar
-                self.contadores_apertura["fichas_restantes"] += cantidad_fichas  # Actualizar el contador de apertura
-                self.contadores_parciales["fichas_restantes"] += cantidad_fichas  # Actualizar el contador parcial
-                self.fichas_restantes_label.config(text=f"Fichas restantes: {self.contadores['fichas_restantes']}")
-                self.contadores["dinero_ingresado"] += cantidad_fichas * self.valor_ficha
-                self.contadores_apertura["dinero_ingresado"] += cantidad_fichas * self.valor_ficha  # Actualizar el contador de apertura
-                self.contadores_parciales["dinero_ingresado"] += cantidad_fichas * self.valor_ficha  # Actualizar el
-                self.contadores_parciales["dinero_ingresado"] += cantidad_fichas * self.valor_ficha  # Actualizar el contador parcial
-                self.fichas_restantes_label.config(text=f"Fichas restantes: {self.contadores['fichas_restantes']}")
-                self.contadores["dinero_ingresado"] += cantidad_fichas * self.valor_ficha
-                self.contadores_apertura["dinero_ingresado"] += cantidad_fichas * self.valor_ficha  # Actualizar el contador de apertura
-                self.contadores_parciales["dinero_ingresado"] += cantidad_fichas * self.valor_ficha  # Actualizar el contador parcial
-                self.contadores_labels["dinero_ingresado"].config(text=f"Dinero ingresado: ${self.contadores['dinero_ingresado']:.2f}")
-                self.guardar_configuracion()  # Guardar los contadores actualizados
+
+                # Agregar fichas al core (esto activará el motor automáticamente)
+                core.agregar_fichas(cantidad_fichas)
+
+                # Actualizar contadores de dinero
+                dinero = cantidad_fichas * self.valor_ficha
+                self.contadores["dinero_ingresado"] += dinero
+                self.contadores_apertura["dinero_ingresado"] += dinero
+                self.contadores_parciales["dinero_ingresado"] += dinero
+
+                self.guardar_configuracion()
                 self.actualizar_contadores_gui()
                 fichas_window.destroy()
             except ValueError:
                 messagebox.showerror("Error", "Ingrese un valor numérico válido.")
-        
+
         tk.Button(fichas_window, text="Confirmar", command=confirmar_fichas, bg="#007BFF", fg="white", font=("Arial", 12), bd=0).pack(pady=5)
         tk.Button(fichas_window, text="Cancelar", command=fichas_window.destroy, bg="#D32F2F", fg="white", font=("Arial", 12), bd=0).pack(pady=5)
 
@@ -475,19 +474,8 @@ class ExpendedoraGUI:
             self.contadores_labels[key].config(text=f"{key.replace('_', ' ').title()}: {self.contadores[key]}")
 
     def expender_fichas_gui(self):
-        if self.contadores["fichas_restantes"] > 0:
-            self.contadores["fichas_restantes"] -= 1
-            self.contadores_apertura["fichas_restantes"] -= 1  # Actualizar el contador de apertura
-            self.contadores_parciales["fichas_restantes"] -= 1  # Actualizar el contador parcial
-            self.contadores["fichas_expendidas"] += 1
-            self.contadores_apertura["fichas_expendidas"] += 1  # Actualizar el contador de apertura
-            self.contadores_parciales["fichas_expendidas"] += 1  # Actualizar el contador parcial
-            self.actualizar_contadores_gui()
-            self.guardar_configuracion()
-            if self.contadores["fichas_restantes"] == 0:
-                self.enviar_datos_al_servidor()
-        else:
-            messagebox.showerror("Error", "No hay suficientes fichas.")
+        """Ya no es necesaria - el hardware controla todo automáticamente"""
+        pass
 
     def simular_billetero(self):
         messagebox.showinfo("Simulación", "Billetero activado: Se ha ingresado dinero.")
@@ -499,31 +487,23 @@ class ExpendedoraGUI:
         messagebox.showinfo("Simulación", "Se están entregando fichas.")
         
     def simular_salida_fichas(self):
-        if self.contadores["fichas_restantes"] > 0:
-            self.contadores["fichas_expendidas"] += 1
-            self.contadores_apertura["fichas_expendidas"] += 1  # Actualizar el contador de apertura
-            self.contadores_parciales["fichas_expendidas"] += 1  # Actualizar el contador parcial
-            self.contadores["fichas_restantes"] -= 1
-            self.contadores_apertura["fichas_restantes"] -= 1  # Actualizar el contador de apertura
-            self.contadores_parciales["fichas_restantes"] -= 1  # Actualizar el contador parcial
-            self.actualizar_contadores_gui()
-            self.guardar_configuracion()
-            if self.contadores["fichas_restantes"] == 0:
-                self.enviar_datos_al_servidor()
-        else:
-            messagebox.showerror("Error", "No hay suficientes fichas.")
+        """Simula el sensor del hopper detectando una ficha (para pruebas)"""
+        from gpio_sim import GPIO
+
+        # Simular flanco descendente en el sensor ENTHOPER
+        GPIO.simulate_sensor_pulse(core.ENTHOPER)
+        messagebox.showinfo("Simulación", "Sensor del hopper activado - Ficha expendida")
             
     def simular_promo(self, promo):
-        # Aumentar el número de fichas restantes según la promoción
-        self.contadores["fichas_restantes"] += self.promociones[promo]["fichas"]  # Sumar fichas en lugar de asignar
-        self.contadores_apertura["fichas_restantes"] += self.promociones[promo]["fichas"]  # Actualizar el contador de apertura
-        self.contadores_parciales["fichas_restantes"] += self.promociones[promo]["fichas"]  # Actualizar el contador parcial
-        self.contadores_labels["fichas_restantes"].config(text=f"Fichas restantes: {self.contadores['fichas_restantes']}")
-        
+        # Agregar fichas al core (activa el motor automáticamente)
+        fichas = self.promociones[promo]["fichas"]
+        core.agregar_fichas(fichas)
+
         # Aumentar el dinero ingresado según el precio de la promoción
-        self.contadores["dinero_ingresado"] += self.promociones[promo]["precio"]
-        self.contadores_apertura["dinero_ingresado"] += self.promociones[promo]["precio"]  # Actualizar el contador de apertura
-        self.contadores_parciales["dinero_ingresado"] += self.promociones[promo]["precio"]  # Actualizar el contador parcial
+        precio = self.promociones[promo]["precio"]
+        self.contadores["dinero_ingresado"] += precio
+        self.contadores_apertura["dinero_ingresado"] += precio
+        self.contadores_parciales["dinero_ingresado"] += precio
         self.contadores_labels["dinero_ingresado"].config(text=f"Dinero ingresado: ${self.contadores['dinero_ingresado']:.2f}")
 
         # Diccionario para simular el switch
@@ -536,13 +516,13 @@ class ExpendedoraGUI:
         # Incrementar el contador de la promoción correspondiente
         if promo in promo_contadores:
             self.contadores[promo_contadores[promo]] += 1
-            self.contadores_apertura[promo_contadores[promo]] += 1  # Actualizar el contador de apertura
-            self.contadores_parciales[promo_contadores[promo]] += 1  # Actualizar el contador parcial
+            self.contadores_apertura[promo_contadores[promo]] += 1
+            self.contadores_parciales[promo_contadores[promo]] += 1
             self.contadores_labels[promo_contadores[promo]].config(text=f"{promo} usadas: {self.contadores[promo_contadores[promo]]}")
         else:
             messagebox.showerror("Error", "Promoción no válida.")
-        
-        self.guardar_configuracion()  # Guardar los contadores actualizados
+
+        self.guardar_configuracion()
 
     def actualizar_fecha_hora(self):
         # Obtener la fecha y hora actual
@@ -550,6 +530,30 @@ class ExpendedoraGUI:
         current_time = now.strftime("%Y-%m-%d %H:%M:%S")
         self.footer_label.config(text=current_time)  # Actualizar el label del footer
         self.footer_label.after(1000, self.actualizar_fecha_hora)  # Llamar a esta función cada segundo
+
+    def actualizar_desde_hardware(self):
+        """Actualiza los contadores desde el hardware cada 500ms"""
+        # Obtener valores del core
+        fichas_restantes_hw = core.obtener_fichas_restantes()
+        fichas_expendidas_hw = core.obtener_fichas_expendidas()
+
+        # Calcular diferencia de fichas expendidas
+        diferencia = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
+
+        if diferencia > 0:
+            # Se expendieron fichas desde el hardware
+            self.contadores["fichas_expendidas"] = fichas_expendidas_hw
+            self.contadores_apertura["fichas_expendidas"] += diferencia
+            self.contadores_parciales["fichas_expendidas"] += diferencia
+
+        # Actualizar fichas restantes
+        self.contadores["fichas_restantes"] = fichas_restantes_hw
+
+        # Actualizar GUI
+        self.actualizar_contadores_gui()
+
+        # Programar próxima actualización
+        self.root.after(500, self.actualizar_desde_hardware)
 
 if __name__ == "__main__":
     root = tk.Tk()

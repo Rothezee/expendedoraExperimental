@@ -1,27 +1,21 @@
 #main.py
-import threading
 import tkinter as tk
 from expendedora_gui import ExpendedoraGUI
-from expendedora_core import enviar_pulso, init_db
+import expendedora_core as core
 from User_management import UserManagement
 
-def start_gui():
-    root = tk.Tk()
-    app = ExpendedoraGUI(root, username="username") 
-    root.mainloop()
-    
 def main(username):
-    # Inicializar la base de datos
-    init_db()
-    
-    # Iniciar el envío de pulsos al servidor
-    threading.Thread(target=enviar_pulso).start()
-    
+    # Inicializar el sistema de control del motor
+    core.iniciar_sistema()
+
     # Iniciar la interfaz gráfica
     root = tk.Tk()
-    app = ExpendedoraGUI(root, username)  # Pasar el nombre de usuario
+    app = ExpendedoraGUI(root, username)
     root.mainloop()
 
+    # Detener el sistema al cerrar
+    core.detener_sistema()
+
 if __name__ == "__main__":
-    user_management = UserManagement(main_callback=main)  # Pasar la función main como callback
-    user_management.run()  # No se pasa ningún argumento aquí
+    user_management = UserManagement(main_callback=main)
+    user_management.run()

@@ -16,7 +16,11 @@ class GPIO:
 
     @classmethod
     def setup(cls, pin, mode, pull_up_down=None):
-        cls._pins[pin] = cls.LOW
+        # Inicializar en HIGH si tiene pull-up
+        if pull_up_down == cls.PUD_UP:
+            cls._pins[pin] = cls.HIGH
+        else:
+            cls._pins[pin] = cls.LOW
         print(f"Pin {pin} configurado como {mode}")
 
     @classmethod
@@ -26,9 +30,21 @@ class GPIO:
 
     @classmethod
     def input(cls, pin):
-        return cls._pins.get(pin, cls.LOW)
+        return cls._pins.get(pin, cls.HIGH)  # Sensores con pull-up por defecto en HIGH
 
     @classmethod
     def cleanup(cls):
         cls._pins.clear()
         print("GPIO limpiado")
+
+    @classmethod
+    def simulate_sensor_pulse(cls, pin):
+        """Simula un pulso del sensor (HIGH -> LOW -> HIGH)"""
+        import time
+        print(f"[SIMULACIÓN] Sensor {pin}: Generando pulso...")
+        cls._pins[pin] = cls.HIGH
+        time.sleep(0.02)
+        cls._pins[pin] = cls.LOW
+        time.sleep(0.05)
+        cls._pins[pin] = cls.HIGH
+        print(f"[SIMULACIÓN] Sensor {pin}: Pulso completado")
