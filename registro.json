@@ -1,0 +1,10 @@
+{
+    "apertura": "2025-10-01 15:15:06",
+    "fichas_expendidas": 3,
+    "dinero_ingresado": 1800.0,
+    "promociones_usadas": {
+        "Promo 1": 0,
+        "Promo 2": 0,
+        "Promo 3": 0
+    }
+}

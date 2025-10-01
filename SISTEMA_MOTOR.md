@@ -8,6 +8,20 @@ El motor se controla automáticamente basándose en el contador `fichas_restante
 
 El sensor del hopper (ENTHOPER) cuenta las fichas que salen y decrementa automáticamente el contador.
 
+## ⚠️ IMPORTANTE: Sincronización Hardware-GUI
+
+El core (hardware) siempre inicia con `fichas_restantes = 0` y `fichas_expendidas = 0`.
+
+La GUI debe sincronizarse con estos valores al iniciar para evitar que el motor quede encendido indefinidamente.
+
+**Problema común**: Si la GUI guarda y restaura `fichas_restantes` de sesiones anteriores pero el hardware inicia en 0, se produce una desincronización que causa que el motor nunca se encienda o nunca se apague correctamente.
+
+**Solución implementada**: Al cargar la configuración, siempre resetear los contadores de fichas:
+```python
+self.contadores["fichas_restantes"] = 0
+self.contadores["fichas_expendidas"] = 0
+```
+
 ## Flujo de Operación
 
 ### 1. Usuario Agrega Fichas

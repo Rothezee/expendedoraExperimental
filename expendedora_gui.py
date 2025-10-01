@@ -183,6 +183,12 @@ class ExpendedoraGUI:
                 self.contadores = config.get("contadores", self.contadores)
                 self.contadores_apertura = config.get("contadores_apertura", self.contadores_apertura)
                 self.contadores_parciales = config.get("contadores_parciales", self.contadores_parciales)
+
+                # IMPORTANTE: Siempre sincronizar fichas_restantes con el hardware al iniciar
+                # El hardware siempre empieza en 0, así que la GUI también debe empezar en 0
+                self.contadores["fichas_restantes"] = 0
+                self.contadores["fichas_expendidas"] = 0
+                print("[GUI] Configuración cargada. Contadores de fichas sincronizados con el hardware.")
         else:
             self.guardar_configuracion()
 
@@ -260,9 +266,16 @@ class ExpendedoraGUI:
         def confirmar_fichas():
             try:
                 cantidad_fichas = int(fichas_entry.get())
+                if cantidad_fichas <= 0:
+                    messagebox.showerror("Error", "La cantidad debe ser mayor a 0.")
+                    return
 
                 # Agregar fichas al core (esto activará el motor automáticamente)
-                core.agregar_fichas(cantidad_fichas)
+                total_fichas = core.agregar_fichas(cantidad_fichas)
+                print(f"[GUI] Fichas agregadas al core: {cantidad_fichas}, Total pendientes: {total_fichas}")
+
+                # Sincronizar inmediatamente con el hardware (solo el estado instantáneo)
+                self.contadores["fichas_restantes"] = total_fichas
 
                 # Actualizar contadores de dinero
                 dinero = cantidad_fichas * self.valor_ficha
@@ -497,7 +510,11 @@ class ExpendedoraGUI:
     def simular_promo(self, promo):
         # Agregar fichas al core (activa el motor automáticamente)
         fichas = self.promociones[promo]["fichas"]
-        core.agregar_fichas(fichas)
+        total_fichas = core.agregar_fichas(fichas)
+        print(f"[GUI] Promo {promo}: {fichas} fichas agregadas, Total pendientes: {total_fichas}")
+
+        # Sincronizar inmediatamente con el hardware (solo el estado instantáneo)
+        self.contadores["fichas_restantes"] = total_fichas
 
         # Aumentar el dinero ingresado según el precio de la promoción
         precio = self.promociones[promo]["precio"]
@@ -522,6 +539,7 @@ class ExpendedoraGUI:
         else:
             messagebox.showerror("Error", "Promoción no válida.")
 
+        self.actualizar_contadores_gui()
         self.guardar_configuracion()
 
     def actualizar_fecha_hora(self):
@@ -538,16 +556,18 @@ class ExpendedoraGUI:
         fichas_expendidas_hw = core.obtener_fichas_expendidas()
 
         # Calcular diferencia de fichas expendidas
-        diferencia = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
+        diferencia_expendidas = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
 
-        if diferencia > 0:
+        if diferencia_expendidas > 0:
             # Se expendieron fichas desde el hardware
             self.contadores["fichas_expendidas"] = fichas_expendidas_hw
-            self.contadores_apertura["fichas_expendidas"] += diferencia
-            self.contadores_parciales["fichas_expendidas"] += diferencia
+            self.contadores_apertura["fichas_expendidas"] += diferencia_expendidas
+            self.contadores_parciales["fichas_expendidas"] += diferencia_expendidas
+            print(f"[GUI] Fichas expendidas: +{diferencia_expendidas} (Total: {fichas_expendidas_hw})")
 
-        # Actualizar fichas restantes
+        # Actualizar fichas restantes (estado instantáneo, no acumulativo)
         self.contadores["fichas_restantes"] = fichas_restantes_hw
+        # Los contadores de apertura/parciales para fichas_restantes no se usan porque es un estado instantáneo
 
         # Actualizar GUI
         self.actualizar_contadores_gui()
