@@ -117,10 +117,10 @@ GPIO.simulate_sensor_pulse(core.ENTHOPER)
 ## Características
 
 ✅ **Control Automático del Motor**: No es necesario encender/apagar manualmente
-✅ **Conteo Preciso**: El sensor cuenta cada ficha que sale
+✅ **Conteo Preciso con Anti-Rebote**: El sensor cuenta cada ficha sin duplicados
 ✅ **Actualización en Tiempo Real**: La GUI se actualiza cada 500ms
 ✅ **Thread-Safe**: Usa locks para evitar condiciones de carrera
-✅ **Detección de Flancos**: Detecta cada pulso del sensor correctamente
+✅ **Detección de Flancos con Debounce**: Ignora rebotes del sensor (300ms)
 ✅ **Sistema de Promociones**: Las promociones activan el motor automáticamente
 
 ## Ejemplo de Uso
@@ -140,13 +140,24 @@ core.agregar_fichas(5)
 ## Configuración de Hardware
 
 ```python
-MOTOR_PIN = 24     # Pin GPIO del motor
-ENTHOPER = 23      # Pin GPIO del sensor del hopper
+MOTOR_PIN = 24         # Pin GPIO del motor
+ENTHOPER = 23          # Pin GPIO del sensor del hopper
+DEBOUNCE_TIME = 0.3    # Tiempo anti-rebote (segundos)
 
 # Sensor configurado con pull-up
 # Estado normal: HIGH
 # Ficha detectada: LOW (flanco descendente)
 ```
+
+### Ajuste del Anti-Rebote (DEBOUNCE_TIME)
+
+El valor de `DEBOUNCE_TIME` determina el tiempo mínimo entre dos fichas consecutivas:
+
+- **0.5 segundos**: Motor lento (2 fichas/seg) - Máxima protección contra rebotes
+- **0.3 segundos**: Motor medio (3 fichas/seg) - **Configuración actual**
+- **0.2 segundos**: Motor rápido (5 fichas/seg) - Menor protección
+
+**⚠️ Ajustar según la velocidad real del motor para evitar conteos múltiples**
 
 ## Ventajas del Sistema
 

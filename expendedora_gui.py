@@ -484,7 +484,13 @@ class ExpendedoraGUI:
 
     def actualizar_contadores_gui(self):
         for key in self.contadores_labels:
-            self.contadores_labels[key].config(text=f"{key.replace('_', ' ').title()}: {self.contadores[key]}")
+            valor = self.contadores[key]
+            # Formatear dinero con decimales, el resto como entero
+            if key == "dinero_ingresado":
+                texto = f"{key.replace('_', ' ').title()}: ${valor:.2f}"
+            else:
+                texto = f"{key.replace('_', ' ').title()}: {int(valor)}"
+            self.contadores_labels[key].config(text=texto)
 
     def expender_fichas_gui(self):
         """Ya no es necesaria - el hardware controla todo automáticamente"""

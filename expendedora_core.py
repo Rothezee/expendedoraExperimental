@@ -14,6 +14,9 @@ registro_file = "registro.json"
 MOTOR_PIN = 24  # Pin del motor
 ENTHOPER = 23  # Sensor para contar fichas que salen
 
+# --- CONFIGURACIÓN DEL SENSOR ---
+DEBOUNCE_TIME = 0.3  # Tiempo mínimo entre fichas (segundos) - ajustar según velocidad del motor
+
 # --- CONFIGURACIÓN DE LA BASE DE DATOS ---
 DB_FILE = "expendedora.db"
 
@@ -159,10 +162,12 @@ def controlar_motor():
     - Motor activo si fichas_restantes > 0
     - Motor apagado si fichas_restantes == 0
     - Sensor cuenta fichas que salen y decrementa fichas_restantes
+    - Implementa anti-rebote para evitar conteos múltiples
     """
     global motor_activo, fichas_restantes, fichas_expendidas
 
     estado_anterior_sensor = GPIO.input(ENTHOPER)
+    ultimo_conteo = 0  # Timestamp del último conteo
 
     while True:
         # Control del motor basado en fichas_restantes
@@ -182,22 +187,31 @@ def controlar_motor():
 
         # Detectar fichas que salen del hopper (flanco descendente)
         estado_actual_sensor = GPIO.input(ENTHOPER)
+        tiempo_actual = time.time()
 
+        # Detectar flanco descendente (HIGH -> LOW)
         if estado_anterior_sensor == GPIO.HIGH and estado_actual_sensor == GPIO.LOW:
-            # Sensor detectó una ficha saliendo
-            with fichas_lock:
-                if fichas_restantes > 0:
-                    fichas_restantes -= 1
-                    fichas_expendidas += 1
-                    print(f"[FICHA EXPENDIDA] Restantes: {fichas_restantes} | Total expendidas: {fichas_expendidas}")
+            # Verificar anti-rebote: debe haber pasado suficiente tiempo desde el último conteo
+            if (tiempo_actual - ultimo_conteo) >= DEBOUNCE_TIME:
+                # Sensor detectó una ficha saliendo
+                with fichas_lock:
+                    if fichas_restantes > 0:
+                        fichas_restantes -= 1
+                        fichas_expendidas += 1
+                        ultimo_conteo = tiempo_actual
+                        print(f"[FICHA EXPENDIDA] Restantes: {fichas_restantes} | Total expendidas: {fichas_expendidas}")
 
-                    # Actualizar registro
-                    actualizar_registro("ficha", 1)
-                else:
-                    print("[ADVERTENCIA] Sensor detectó ficha pero contador ya está en 0")
+                        # Actualizar registro
+                        actualizar_registro("ficha", 1)
+                    else:
+                        print("[ADVERTENCIA] Sensor detectó ficha pero contador ya está en 0")
+            else:
+                # Rebote detectado - ignorar
+                tiempo_desde_ultimo = (tiempo_actual - ultimo_conteo) * 1000
+                print(f"[REBOTE IGNORADO] Solo {tiempo_desde_ultimo:.1f}ms desde última ficha")
 
         estado_anterior_sensor = estado_actual_sensor
-        time.sleep(0.01)  # 10ms para estabilidad del sensor
+        time.sleep(0.01)  # 10ms de polling del sensor
 
 # --- FUNCIÓN PARA AGREGAR FICHAS (LLAMADA DESDE LA GUI) ---
 def agregar_fichas(cantidad):
