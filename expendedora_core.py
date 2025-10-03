@@ -156,21 +156,25 @@ def enviar_cierre_diario():
     r_cuenta = r_sal = promo1_count = promo2_count = promo3_count = 0  
 
 # --- CONTROL DEL MOTOR Y CONTEO DE FICHAS ---
+import time
+
 def controlar_motor():
-    """
-    Hilo que controla el motor basado en fichas_restantes.
-    - Motor activo si fichas_restantes > 0
-    - Motor apagado si fichas_restantes == 0
-    - Sensor cuenta fichas que salen y decrementa fichas_restantes
-    - Implementa anti-rebote con DEBOUNCE_TIME
-    """
     global motor_activo, fichas_restantes, fichas_expendidas
 
+    # Configuración inicial del sensor y motor
     estado_anterior_sensor = GPIO.input(ENTHOPER)
-    ultimo_conteo = 0  # Para anti-rebote
+    ultimo_conteo = 0
 
+    print("[CORE] Iniciando hilo de control de motor")
     while True:
-        # Control del motor
+        # Lee el estado actual del sensor
+        estado_actual_sensor = GPIO.input(ENTHOPER)
+        tiempo_actual = time.time()
+
+        # Debug: muestra el valor actual del sensor en consola
+        print(f"[DEBUG SENSOR] Estado anterior: {estado_anterior_sensor} | Estado actual: {estado_actual_sensor}")
+
+        # Control automático del motor
         if fichas_restantes > 0 and not motor_activo:
             GPIO.output(MOTOR_PIN, GPIO.HIGH)
             motor_activo = True
@@ -180,24 +184,23 @@ def controlar_motor():
             motor_activo = False
             print("[MOTOR OFF] Todas las fichas expendidas")
 
-        # Detección de fichas que salen (flanco descendente)
-        estado_actual_sensor = GPIO.input(ENTHOPER)
-        tiempo_actual = time.time()
+        # Detección de flanco descendente (HIGH -> LOW)
         if estado_anterior_sensor == GPIO.HIGH and estado_actual_sensor == GPIO.LOW:
+            print("[SENSOR] Flanco descendente detectado")
             # Anti-rebote: esperar DEBOUNCE_TIME entre pulsos válidos
             if tiempo_actual - ultimo_conteo >= DEBOUNCE_TIME:
                 if fichas_restantes > 0:
                     fichas_restantes -= 1
                     fichas_expendidas += 1
-                    ultimo_conteo = tiempo_actual
-                    print(f"[FICHA EXPENDIDA] Restantes: {fichas_restantes}")
+                    print(f"[FICHA CONTADA] Restantes: {fichas_restantes}")
+                else:
+                    print("[SENSOR] Ficha detectada pero no quedan fichas por expender")
+                ultimo_conteo = tiempo_actual
             else:
-                print(f"[REBOTE IGNORADO] Delay: {tiempo_actual - ultimo_conteo:.2f}s")
+                print(f"[REBOTE IGNORADO] Pulsos demasiado seguidos ({tiempo_actual - ultimo_conteo:.2f}s)")
         estado_anterior_sensor = estado_actual_sensor
 
-        # Pequeña pausa para evitar ocupar CPU
-        time.sleep(0.01)
-
+        time.sleep(0.01)  # Pequeña pausa para no saturar la CPU
 # --- FUNCIÓN PARA AGREGAR FICHAS (LLAMADA DESDE LA GUI) ---
 def agregar_fichas(cantidad):
     """
