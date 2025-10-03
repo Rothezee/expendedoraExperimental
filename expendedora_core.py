@@ -1,297 +1,168 @@
-from gpio_sim import GPIO  # import RPi.GPIO as GPIO  # Descomentar para usar en hardware real
-import time
-import requests
-import sqlite3
-import threading
-import json
-import os
-from datetime import datetime
-
-config_file = "config.json"
-registro_file = "registro.json"
-
-# --- CONFIGURACIÓN DE PINES ---
-MOTOR_PIN = 24  # Pin del motor
-ENTHOPER = 23  # Sensor para contar fichas que salen
-
-# --- CONFIGURACIÓN DEL SENSOR ---
-DEBOUNCE_TIME = 0.3  # Tiempo mínimo entre fichas (segundos) - ajustar según velocidad del motor
-
-# --- CONFIGURACIÓN DE LA BASE DE DATOS ---
-DB_FILE = "expendedora.db"
-
-# --- CONFIGURACIÓN DE SERVIDORES ---
-SERVER_HEARTBEAT = "http://192.168.1.33/esp32_project/insert_heartbeat.php"
-SERVER_CIERRE = "http://192.168.1.33/esp32_project/insert_close_expendedora.php"
-
-# --- VARIABLES DEL SISTEMA ---
-cuenta = 0
-fichas_restantes = 0  # Contador de fichas pendientes por expender
-fichas_expendidas = 0  # Contador de fichas ya expendidas
-r_cuenta = 0
-r_sal = 0
-promo1_count = 0
-promo2_count = 0
-promo3_count = 0
-motor_activo = False
-
-# --- LOCK PARA THREADING ---
-fichas_lock = threading.Lock()
-
-# ----------CONEXION CON GUI Y LOGICA PARA GUARDAR REGISTROS---------------
-def cargar_configuracion():
-    if os.path.exists(config_file):
-        with open(config_file, 'r') as f:
-            return json.load(f)
-    else:
-        return {"promociones": {}, "valor_ficha": 1.0}
-
-def guardar_configuracion(config):
-    with open(config_file, 'w') as f:
-        json.dump(config, f, indent=4)
-
-def iniciar_apertura():
-    registro = {
-        "apertura": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        "fichas_expendidas": 0,
-        "dinero_ingresado": 0,
-        "promociones_usadas": {
-            "Promo 1": 0,
-            "Promo 2": 0,
-            "Promo 3": 0
-        }
-    }
-    guardar_registro(registro)
-    return registro
-
-def cargar_registro():
-    if os.path.exists(registro_file):
-        with open(registro_file, 'r') as f:
-            return json.load(f)
-    else:
-        return iniciar_apertura()
-
-def guardar_registro(registro):
-    with open(registro_file, 'w') as f:
-        json.dump(registro, f, indent=4)
-
-def actualizar_registro(tipo, cantidad):
-    registro = cargar_registro()
-    if tipo == "ficha":
-        registro["fichas_expendidas"] += cantidad
-        registro["dinero_ingresado"] += cantidad * cargar_configuracion()["valor_ficha"]
-    elif tipo in ["Promo 1", "Promo 2", "Promo 3"]:
-        registro["promociones_usadas"][tipo] += 1
-        registro["dinero_ingresado"] += cargar_configuracion()["promociones"][tipo]["precio"]
-    guardar_registro(registro)
-
-def realizar_cierre():
-    registro = cargar_registro()
-    registro["cierre"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    guardar_registro(registro)
-    return registro
-
-# --- CONFIGURACIÓN GPIO ---
-GPIO.setmode(GPIO.BCM)
-
-# Configurar sensor como entrada
-GPIO.setup(ENTHOPER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-
-# Configurar motor como salida
-GPIO.setup(MOTOR_PIN, GPIO.OUT)
-GPIO.output(MOTOR_PIN, GPIO.LOW)
-
-# --- CONFIGURACIÓN DE BASE DE DATOS ---
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS config (clave TEXT PRIMARY KEY, valor INTEGER)''')
-    conn.commit()
-    conn.close()
-
-def get_config(clave, default=0):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT valor FROM config WHERE clave=?", (clave,))
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else default
-
-def set_config(clave, valor):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO config (clave, valor) VALUES (?, ?) ON CONFLICT(clave) DO UPDATE SET valor=?", (clave, valor, valor))
-    conn.commit()
-    conn.close()
-
-# --- ENVÍO DE DATOS AL SERVIDOR ---
-def enviar_pulso():
-    data = {"device_id": "EXPENDEDORA_1"}
-    try:
-        response = requests.post(SERVER_HEARTBEAT, json=data)
-        print("Heartbeat enviado:", response.text)
-    except requests.RequestException as e:
-        print("Error enviando heartbeat:", e)
-
-    threading.Timer(60, enviar_pulso).start()  
-
-def enviar_cierre_diario():
-    global r_cuenta, r_sal, promo1_count, promo2_count, promo3_count
-
-    data = {
-        "device_id": "EXPENDEDORA_1",
-        "dato1": promo3_count,
-        "dato2": r_cuenta,
-        "dato3": promo1_count,
-        "dato4": promo2_count,
-        "dato5": r_sal
-    }
-    
-    try:
-        response = requests.post(SERVER_CIERRE, json=data)
-        print("Cierre enviado:", response.text)
-    except requests.RequestException as e:
-        print("Error enviando cierre:", e)
-
-    r_cuenta = r_sal = promo1_count = promo2_count = promo3_count = 0  
-
-# --- CONTROL DEL MOTOR Y CONTEO DE FICHAS ---
-def controlar_motor():
-    """
-    Hilo que controla el motor basándose en fichas_restantes.
-    - Motor activo si fichas_restantes > 0
-    - Motor apagado si fichas_restantes == 0
-    - Sensor cuenta fichas que salen y decrementa fichas_restantes
-    - Implementa anti-rebote para evitar conteos múltiples
-    """
-    global motor_activo, fichas_restantes, fichas_expendidas
-
-    estado_anterior_sensor = GPIO.input(ENTHOPER)
-    ultimo_conteo = 0  # Timestamp del último conteo
-
-    while True:
-        # Control del motor basado en fichas_restantes
-        with fichas_lock:
-            if fichas_restantes > 0:
-                # Hay fichas pendientes - Motor debe estar encendido
-                if not motor_activo:
-                    GPIO.output(MOTOR_PIN, GPIO.HIGH)
-                    motor_activo = True
-                    print(f"[MOTOR ON] Fichas pendientes: {fichas_restantes}")
-            else:
-                # No hay fichas pendientes - Motor debe estar apagado
-                if motor_activo:
-                    GPIO.output(MOTOR_PIN, GPIO.LOW)
-                    motor_activo = False
-                    print("[MOTOR OFF] Todas las fichas expendidas")
-
-        # Detectar fichas que salen del hopper (flanco descendente)
-        estado_actual_sensor = GPIO.input(ENTHOPER)
-        tiempo_actual = time.time()
-
-        # Detectar flanco descendente (HIGH -> LOW)
-        if estado_anterior_sensor == GPIO.HIGH and estado_actual_sensor == GPIO.LOW:
-            # Verificar anti-rebote: debe haber pasado suficiente tiempo desde el último conteo
-            if (tiempo_actual - ultimo_conteo) >= DEBOUNCE_TIME:
-                # Sensor detectó una ficha saliendo
-                with fichas_lock:
-                    if fichas_restantes > 0:
-                        fichas_restantes -= 1
-                        fichas_expendidas += 1
-                        ultimo_conteo = tiempo_actual
-                        print(f"[FICHA EXPENDIDA] Restantes: {fichas_restantes} | Total expendidas: {fichas_expendidas}")
-
-                        # Actualizar registro
-                        actualizar_registro("ficha", 1)
-                    else:
-                        print("[ADVERTENCIA] Sensor detectó ficha pero contador ya está en 0")
-            else:
-                # Rebote detectado - ignorar
-                tiempo_desde_ultimo = (tiempo_actual - ultimo_conteo) * 1000
-                print(f"[REBOTE IGNORADO] Solo {tiempo_desde_ultimo:.1f}ms desde última ficha")
-
-        estado_anterior_sensor = estado_actual_sensor
-        time.sleep(0.01)  # 10ms de polling del sensor
-
-# --- FUNCIÓN PARA AGREGAR FICHAS (LLAMADA DESDE LA GUI) ---
-def agregar_fichas(cantidad):
-    """
-    Agrega fichas al contador para que el motor las expenda
-    """
-    global fichas_restantes
-    
-    with fichas_lock:
-        fichas_restantes += cantidad
-        print(f"Fichas agregadas: {cantidad} | Total pendientes: {fichas_restantes}")
-    
-    return fichas_restantes
-
-def obtener_fichas_restantes():
-    """
-    Retorna la cantidad de fichas pendientes por expender
-    """
-    with fichas_lock:
-        return fichas_restantes
-
-def obtener_fichas_expendidas():
-    """
-    Retorna la cantidad de fichas ya expendidas
-    """
-    with fichas_lock:
-        return fichas_expendidas
-
-# --- CONVERSIÓN DE DINERO A FICHAS ---
-def convertir_fichas():
-    global cuenta, fichas_restantes, r_sal
-
-    valor1 = get_config("VALOR1", 1000)
-    valor2 = get_config("VALOR2", 5000)
-    valor3 = get_config("VALOR3", 10000)
-    fichas1 = get_config("FICHAS1", 1)
-    fichas2 = get_config("FICHAS2", 2)
-    fichas3 = get_config("FICHAS3", 5)
-
-    with fichas_lock:
-        if cuenta >= valor1 and cuenta < valor2:
-            fichas_restantes += fichas1
-            cuenta -= valor1
-        elif cuenta >= valor2 and cuenta < valor3:
-            fichas_restantes += fichas2
-            cuenta -= valor2
-        elif cuenta >= valor3:
-            fichas_restantes += fichas3
-            cuenta -= valor3
-
-        r_sal += fichas_restantes
-
-# --- FUNCIONES PARA LA GUI ---
-def obtener_dinero_ingresado():
-    return cuenta
-
-def obtener_fichas_disponibles():
-    return obtener_fichas_restantes()
-
-def expender_fichas(cantidad):
-    """
-    Función llamada desde la GUI para agregar fichas al dispensador
-    """
-    return agregar_fichas(cantidad)
-
-# --- PROGRAMA PRINCIPAL ---
-def iniciar_sistema():
-    """Inicializa el sistema de control de motor (sin GUI)"""
-    init_db()
-    enviar_pulso()
-
-    # Iniciar hilo de control del motor
-    motor_thread = threading.Thread(target=controlar_motor, daemon=True)
-    motor_thread.start()
-    print("Sistema de control de motor iniciado")
-
-    return motor_thread
-
-def detener_sistema():
-    """Apaga el motor y limpia GPIO"""
-    GPIO.output(MOTOR_PIN, GPIO.LOW)
-    GPIO.cleanup()
-    print("Sistema detenido")
+ZnJvbSBncGlvX3NpbSBpbXBvcnQgR1BJTyAgIyBpbXBvcnQgUlBpLkdQSU8gYXMgR1BJTyAgIyBEZXNjb21lbnRhciBwYXJhIHVzYXIgZW4gaGFyZHdhcmUgcmVhbA0KaW1wb3J0IHRpbWUNCmltcG9ydCByZXF1ZXN0cw0KaW1wb3J0IHNx
+bGl0ZTMNCmltcG9ydCB0aHJlYWRpbmcNCmltcG9ydCBqc29uDQppbXBvcnQg
+b3MNCmZyb20gZGF0ZXRpbWUgaW1wb3J0IGRhdGV0aW1lDQoNCmNvbmZpZ19m
+aWxlID0gImNvbmZpZy5qc29uIg0KcmVnaXN0cm9fZmlsZSA9ICJyZWdpc3Ry
+by5qc29uIg0KDQojIC0tLSBDT05GSUdVUkFDScOTTiBERSBQSU5FUyAtLS0N
+Ck1PVE9SX1BJTiA9IDI0ICAjIFBpbiBkZWwgbW90b3INCkVOTEhPUEVSID0g
+MjMgICMgU2Vuc29yIHBhcmEgY29udGFyIGZpY2hhcyBxdWUgc2FsZW4NCg0K
+IyAtLS0gQ09ORklHVVJBQ0nDk04gREVMIFNFTlNPUiAtLS0NCkRFQk9VTkNF
+X1RJTUUgPSAwLjQgICMgVGllbXBvIG3DrW5pbW8gZW50cmUgZmljaGFzIChz
+ZWd1bmRvcykgLSBhanVzdGFyIHNlZ8O6biB2ZWxvY2lkYWQgZGVsIG1vdG9y
+DQoNCiMgLS0tIENPTkZJR1VSQUNJw5NOIDERQ0lFIEJBU0UgREUgREFUT1Mg
+LS0tDQpEQl9GSUxFID0gImV4cGVuZGVkb3JhLmRiIg0KDQojIC0tLSBDT05G
+SUdVUkFDScOTTiBERSBTRVJWSURPUkVTIC0tLQ0KU0VSVkVSX0hFQVJUQkVB
+VCA9ICJodHRwOi8vMTkyLjE2OC4xLjMzL2VzcDMyX3Byb2plY3QvaW5zZXJ0
+X2hlYXJ0YmVhdC5waHAiDQpTRVJWRVJfQ0lFUlJFID0gImh0dHA6Ly8xOTIu
+MTY4LjEuMzMvZXNwMzJfcHJvamVjdC9pbnNlcnRfY2xvc2VfZXhwZW5kZWRv
+cmEucGhwIg0KDQojIC0tLSBWQVJJQUJMRVMgREVMIFNJU1RFTUEgLS0tDQpj
+dWVudGEgPSAwDQpmaWNoYXNfcmVzdGFudGVzID0gMCAgIyBDb250YWRvciBk
+ZSBmaWNoYXMgcGVuZGllbnRlcyBwb3IgZXhwZW5kZXINCmZpY2hhc19leHBl
+bmRpZGFzID0gMCAgIyBDb250YWRvciBkZSBmaWNoYXMgeWEgZXhwZW5kaWRh
+cw0Kcl9jdWVudGEgPSAwDQpyX3NhbCA9IDANCnByb21vMV9jb3VudCA9IDAN
+CnByb21vMl9jb3VudCA9IDANCnByb21vM19jb3VudCA9IDANCm1vdG9yX2Fj
+dGl2byA9IEZhbHNlDQoNCiMgLS0tIExPQ0sgUEFSQSBUSFJFQURJTkcgLS0t
+DQpmaWNoYXNfbG9jayA9IHRocmVhZGluZy5Mb2NrKCkNCg0KIyAtLS0tLS0t
+LS0tQ09ORVhJT04gQ09OIEdVSSBZIExPR0lDQSBQQVJBIEdVQVJEQVIgUkVH
+SVNUUk9TLS0tLS0tLS0tLS0tLS0tDQpkZWYgY2FyZ2FyX2NvbmZpZ3VyYWNp
+b24oKToNCiAgICBpZiBvcy5wYXRoLmV4aXN0cyhjb25maWdfZmlsZSk6DQog
+ICAgICAgIHdpdGggb3Blbihjb25maWdfZmlsZSwgJ3InKSBhcyBmOg0KICAg
+ICAgICAgICAgcmV0dXJuIGpzb24ubG9hZChmKQ0KICAgIGVsc2U6DQogICAg
+ICAgIHJldHVybiB7InByb21vY2lvbmVzIjoge30sICJ2YWxvcl9maWNoYSI6
+IDEuMH0NCg0KZGVmIGd1YXJkYXJfY29uZmlndXJhY2lvbihjb25maWcpOg0K
+ICAgIHdpdGggb3Blbihjb25maWdfZmlsZSwgJ3cnKSBhcyBmOg0KICAgICAg
+ICBqc29uLmR1bXAoY29uZmlnLCBmLCBpbmRlbnQ9NCkNCg0KZGVmIGluaWNp
+YXJfYXBlcnR1cmEoKToNCiAgICByZWdpc3RybyA9IHsNCiAgICAgICAgImFw
+ZXJ0dXJhIjogZGF0ZXRpbWUubm93KCkuc3RyZnRpbWUoJyVZLSVtLSVkICVI
+OiVNOiVTJyksDQogICAgICAgICJmaWNoYXNfZXhwZW5kaWRhcyI6IDAsDQog
+ICAgICAgICJkaW5lcm9faW5ncmVzYWRvIjogMCwNCiAgICAgICAgInByb21v
+Y2lvbmVzX3VzYWRhcyI6IHsNCiAgICAgICAgICAgICJQcm9tbyAxIjogMCwN
+CiAgICAgICAgICAgICJQcm9tbyAyIjogMCwNCiAgICAgICAgICAgICJQcm9t
+byAzIjogMA0KICAgICAgICB9DQogICAgfQ0KICAgIGd1YXJkYXJfcmVnaXN0
+cm8ocmVnaXN0cm8pDQogICAgcmV0dXJuIHJlZ2lzdHJvDQoNCmRlZiBjYXJn
+YXJfcmVnaXN0cm8oKToNCiAgICBpZiBvcy5wYXRoLmV4aXN0cyhyZWdpc3Ry
+b19maWxlKToNCiAgICAgICAgd2l0aCBvcGVuKHJlZ2lzdHJvX2ZpbGUsICdy
+JykgYXMgZjoNCiAgICAgICAgICAgIHJldHVybiBqc29uLmxvYWQoZikNCiAg
+ICBlbHNlOg0KICAgICAgICByZXR1cm4gaW5pY2lhcl9hcGVydHVyYSgpDQoN
+CmRlZiBndWFyZGFyX3JlZ2lzdHJvKHJlZ2lzdHJvKToNCiAgICB3aXRoIG9w
+ZW4ocmVnaXN0cm9fZmlsZSwgJ3cnKSBhcyBmOg0KICAgICAgICBqc29uLmR1
+bXAocmVnaXN0cm8sIGYsIGluZGVudD00KQ0KDQpkZWYgYWN0dWFsaXphcl9y
+ZWdpc3Rybyh0aXBvLCBjYW50aWRhZCk6DQogICAgcmVnaXN0cm8gPSBjYXJn
+YXJfcmVnaXN0cm8oKQ0KICAgIGlmIHRpcG8gPT0gImZpY2hhIjoNCiAgICAg
+ICAgcmVnaXN0cm9bImZpY2hhc19leHBlbmRpZGFzIl0gKz0gY2FudGlkYWQN
+CiAgICAgICAgcmVnaXN0cm9bImRpbmVyb19pbmdyZXNhZG8iXSArPSBjYW50
+aWRhZCAqIGNhcmdhcl9jb25maWd1cmFjaW9uKClbInZhbG9yX2ZpY2hhIl0N
+CiAgICBlbGlmIHRpcG8gaW4gWyJQcm9tbyAxIiwgIlByb21vIDIiLCAiUHJv
+bW8gMyJdOg0KICAgICAgICByZWdpc3Jyb1sicHJvbW9jaW9uZXNfdXNhZGFz
+Il1bdGlwb10gKz0gMQ0KICAgICAgICByZWdpc3Ryb1siZGluZXJvX2luZ3Jl
+c2FkbyJdICs9IGNhcmdhcl9jb25maWd1cmFjaW9uKClbInByb21vY2lvbmVz
+Il1bdGlwb11bInByZWNpbyJdDQogICAgZ3VhcmRhcl9yZWdpc3RybyhyZWdp
+c3RybykNCg0KZGVmIHJlYWxpemFyX2NpZXJyZSgpOg0KICAgIHJlZ2lzdHJv
+ID0gY2FyZ2FyX3JlZ2lzdHJvKCkNCiAgICByZWdpc3Ryb1siY2llcnJlIl0g
+PSBkYXRldGltZS5ub3coKS5zdHJmdGltZSgnJVktJW0tJWQgJUg6JU06JVMn
+KQ0KICAgIGd1YXJkYXJfcmVnaXN0cm8ocmVnaXN0cm8pDQogICAgcmV0dXJu
+IHJlZ2lzdHJvDQoNCiMgLS0tIENPTkZJR1VSQUNJw5NOIEdQSU8gLS0tDQpH
+UElPLnNldG1vZGUoR1BJTy5CQ00pDQoNCiMgQ29uZmlndXJhciBzZW5zb3Ig
+Y29tbyBlbnRyYWRhDQpHUElPLnNldHVwKEVOVEhPUEVSLCBHUElPLklOLCBw
+dWxsX3VwX2Rvd249R1BJTy5QVURfVVApDQoNCiMgQ29uZmlndXJhciBtb3Rv
+ciBjb21vIHNhbGlkYQ0KR1BJTy5zZXR1cChNT1RPUl9QSU4sIEdQSU8uT1VU
+KQ0KR1BJTy5vdXRwdXQoTU9UT1JfUElOLCBHUElPLkxPVykNCg0KIyAtLS0g
+Q09ORklHVVJBQ0nDk04gREUgQkFTRSBERSBEQVRPUyAtLS0NCmRlZiBpbml0
+X2RiKCk6DQogICAgY29ubiA9IHNxbGl0ZTMuY29ubmVjdChEQl9GSUxFKQ0K
+ICAgIGN1cnNvciA9IGNvbm4uY3Vyc29yKCkNCiAgICBjdXJzb3IuZXhlY3V0
+ZSgnJydDUkVBVEUgVEFCTEUgSUYgTk9UIEVYSVNUUyBjb25maWcgKGNsYXZl
+IFRFWFQgUFJJTUFSWSBLRVksIHZhbG9yIElOVEVHRVIpJycnKQ0KICAgIGNv
+bm4uY29tbWl0KCkNCiAgICBjb25uLmNsb3NlKCkNCg0KZGVmIGdldF9jb25m
+aWcoY2xhdmUsIGRlZmF1bHQ9MCk6DQogICAgY29ubiA9IHNxbGl0ZTMuY29u
+bmVjdChEQl9GSUxFKQ0KICAgIGN1cnNvciA9IGNvbm4uY3Vyc29yKCkNCiAg
+ICBjdXJzb3IuZXhlY3V0ZSgiU0VMRUNUIHZhbG9yIEZST00gY29uZmlnIFdI
+RVJFIGNsYXZlPT8iLCAoY2xhdmUsKSkNCiAgICByb3cgPSBjdXJzb3IuZmV0
+Y2hvbmUoKQ0KICAgIGNvbm4uY2xvc2UoKQ0KICAgIHJldHVybiByb3dbMF0g
+aWYgcm93IGVsc2UgZGVmYXVsdA0KDQpkZWYgc2V0X2NvbmZpZyhjbGF2ZSwg
+dmFsb3IpOg0KICAgIGNvbm4gPSBzcWxpdGUzLmNvbm5lY3QoREJfRklMRSkN
+CiAgICBjdXJzb3IgPSBjb25uLmN1cnNvcigpDQogICAgY3Vyc29yLmV4ZWN1
+dGUoIklOU0VSVCBJTlRPIGNvbmZpZyAoY2xhdmUsIHZhbG9yKSBWQUxVRVMg
+KD8sID8pIE9OIENPTkZMSUNUKGNsYXZlKSBETyBVUERBVEUgU0VUIHZhbG9y
+PT8iLCAoY2xhdmUsIHZhbG9yLCB2YWxvcikpDQogICAgY29ubi5jb21taXQo
+KQ0KICAgIGNvbm4uY2xvc2UoKQ0KDQojIC0tLSBFTlbDjU8gREUgREFUT1Mg
+QUwgU0VSVklET1IgLS0tDQpkZWYgZW52aWFyX3B1bHNvKCk6DQogICAgZGF0
+YSA9IHsiZGV2aWNlX2lkIjogIkVYUEVOREVET1JBXzEifQ0KICAgIHRyeToN
+CiAgICAgICAgcmVzcG9uc2UgPSByZXF1ZXN0cy5wb3N0KFNFUlZFUl9IRUFS
+VEJFQVQsIGpzb249ZGF0YSkNCiAgICAgICAgcHJpbnQoIkhlYXJ0YmVhdCBl
+bnZpYWRvOiIsIHJlc3BvbnNlLnRleHQpDQogICAgZXhjZXB0IHJlcXVlc3Rz
+LlJlcXVlc3RFeGNlcHRpb24gYXMgZToNCiAgICAgICAgcHJpbnQoIkVycm9y
+IGVudmlhbmRvIGhlYXJ0YmVhdDoiLCBlKQ0KDQogICAgdGhyZWFkaW5nLlRp
+bWVyKDYwLCBlbnZpYXJfcHVsc28pLnN0YXJ0KCkgIA0KDQpkZWYgZW52aWFy
+X2NpZXJyZV9kaWFyaW8oKToNCiAgICBnbG9iYWwgcl9jdWVudGEsIHJfc2Fs
+LCBwcm9tbzFfY291bnQsIHByb21vMl9jb3VudCwgcHJvbW8zX2NvdW50DQoN
+CiAgICBkYXRhID0gew0KICAgICAgICAiZGV2aWNlX2lkIjogIkVYUEVOREVE
+T1JBXzEiLA0KICAgICAgICAiZGF0bzEiOiBwcm9tbzNfY291bnQsDQogICAg
+ICAgICJkYXRvMiI6IHJfY3VlbnRhLA0KICAgICAgICAiZGF0bzMiOiBwcm9t
+bzFfY291bnQsDQogICAgICAgICJkYXRvNCI6IHByb21vMl9jb3VudCwNCiAg
+ICAgICAgImRhdG81Ijogcl9zYWwNCiAgICB9DQogICAgDQogICAgdHJ5Og0K
+ICAgICAgICByZXNwb25zZSA9IHJlcXVlc3RzLnBvc3QoU0VSVkVSX0NJRVJS
+RSwganNvbj1kYXRhKQ0KICAgICAgICBwcmludCgiQ2llcnJlIGVudmlhZG86
+IiwgcmVzcG9uc2UudGV4dCkNCiAgICBleGNlcHQgcmVxdWVzdHMuUmVxdWVz
+VGV4Y2VwdGlvbiBhcyBlOg0KICAgICAgICBwcmludCgiRXJyb3IgZW52aWFu
+ZG8gY2llcnJlOiIsIGUpDQoNCiAgICByX2N1ZW50YSA9IHJfc2FsID0gcHJv
+bW8xX2NvdW50ID0gcHJvbW8yX2NvdW50ID0gcHJvbW8zX2NvdW50ID0gMCAg
+DQoNCiMgLS0tIENPTlRST0wgREVMIE1PVE9SIFkgQ09OVEVPIERFIEZJQ0hB
+UyAtLS0NCmRlZiBjb250cm9sYXJfbW90b3IoKToNCiAgICAiIiINCiAgICBI
+aWxvIHF1ZSBjb250cm9sYSBlbCBtb3RvciBiYXPDoW5kb3NlIGVuIGZpY2hh
+c19yZXN0YW50ZXMuDQogICAgLSBNb3RvciBhY3Rpdm8gc2kgZmljaGFzX3Jl
+c3RhbnRlcyA+IDANCiAgICAtIE1vdG9yIGFwYWdhZG8gc2kgZmljaGFzX3Jl
+c3RhbnRlcyA9PSAwDQogICAgLSBTZW5zb3IgY3VlbnRhIGZpY2hhcyBxdWUg
+c2FsZW4geSBkZWNyZW1lbnRhIGZpY2hhc19yZXN0YW50ZXMNCiAgICAtIElt
+cGxlbWVudGEgYW50aS1yZWJvdGUgcGFyYSBldml0YXIgY29udGVvcyBtw7ls
+dGlwbGVzDQogICAgIiIiDQogICAgZ2xvYmFsIG1vdG9yX2FjdGl2bywgZmlj
+aGFzX3Jlc3RhbnRlcywgZmljaGFzX2V4cGVuZGlkYXMNCg0KICAgIGVzdGFk
+b19hbnRlcmlvcl9zZW5zb3IgPSBHUElPLmlucHV0KEVOVEhPUEVSKQ0KICAg
+IHVsdGltb19jb250ZW8gPSAwICAjIFRpbWVzdGFtcCBkZWwgw7psdGltbyBj
+b250ZW8NCg0KICAgIHdoaWxlIFRydWU6DQogICAgICAgICMgQ29udHJvbCBk
+ZWwgbW90b3IgYmFzYWRvIGVuIGZpY2hhc19yZXN0YW50ZXMNCiAgICAgICAg
+bWl0aCBmaWNoYXNfbG9jazoNCiAgICAgICAgICAgIGlmIGZpY2hhc19yZXN0
+YW50ZXMgPiAwOg0KICAgICAgICAgICAgICAgICMgSGF5IGZpY2hhcyBwZW5k
+aWVudGVzIC0gTW90b3IgZGViZSBlc3RhciBlbmNlbmRpZG8NCiAgICAgICAg
+ICAgICAgICBpZiBub3QgbW90b3JfYWN0aXZvOg0KICAgICAgICAgICAgICAg
+ICAgICBHUElPLm91dHB1dChNT1RPUl9QSU4sIEdQSU8uSElHSCkNCiAgICAg
+ICAgICAgICAgICAgICAgbW90b3JfYWN0aXZvID0gVHJ1ZQ0KICAgICAgICAg
+ICAgICAgICAgICBwcmludChmIltNT1RPUiBPTl0gRmljaGFzIHBlbmRpZW50
+ZXM6IHtmaWNoYXNfcmVzdGFudGVzfSIpDQogICAgICAgICAgICBlbHNlOg0K
+ICAgICAgICAgICAgICAgICMgTm8gaGF5IGZpY2hhcyBwZW5kaWVudGVzIC0g
+TW90b3IgZGViZSBlc3RhciBhcGFnYWRvDQogICAgICAgICAgICAgICAgaWYg
+bW90b3JfYWN0aXZvOg0KICAgICAgICAgICAgICAgICAgICBHUElPLm91dHB1
+dChNT1RPUl9QSU4sIEdQSU8uTE9XKQ0KICAgICAgICAgICAgICAgICAgICBt
+b3Rvcl9hY3Rpdm8gPSBGYWxzZQ0KICAgICAgICAgICAgICAgICAgICBwcmlu
+dCgiW01PVE9SIE9GRl0gVG9kYXMgbGFzIGZpY2hhcyBleHBlbmRpZGFzIikN
+Cg0KICAgICAgICAjIERldGVjdGFyIGZpY2hhcyBxdWUgc2FsZW4gZGVsIGhv
+cHBlciAoZmxhbmNvIGRlc2NlbmRlbnRlKQ0KICAgICAgICBlc3RhZG9fYWN0
+dWFsX3NlbnNvciA9IEdQSU8uaW5wdXQoRU5USE9QRVIpDQogICAgICAgIHRp
+ZW1wb19hY3R1YWwgPSB0aW1lLnRpbWUoKQ0KDQogICAgICAgICMgRGV0ZWN0
+YXIgZmxhbmNvIGRlc2NlbmRlbnRlIChISUdIIC0+IExPVykNCiAgICAgICAg
+aWYgZXN0YWRvX2FudGVyaW9yX3NlbnNvciA9PSBHUElPLkhJR0ggYW5kIGVz
+dGFkb19hY3R1YWxfc2Vuc29yID09IEdQSU8uTE9XOg0KICAgICAgICAgICAg
+IyBWZXJpZmljYXIgYW50aS1yZWJvdGU6IGRlYmUgaGFiZXIgcGFzYWRvIHN1
+ZmljaWVudGUgdGllbXBvIGRlc2RlIGVsIMO6bHRpbW8gY29udGVvDQogICAg
+ICAgICAgICBpZiAodGllbXBvX2FjdHVhbCAtIHVsdGltb19jb250ZW8pID49
+IERFQk9VTkNFX1RJTUU6DQogICAgICAgICAgICAgICAgIyBTZW5zb3IgZGV0
+ZWN0w7MgdW5hIGZpY2hhIHNhbGllbmRvDQogICAgICAgICAgICAgICAgd2l0
+aCBmaWNoYXNfbG9jazoNCiAgICAgICAgICAgICAgICAgICAgaWYgZmljaGFz
+X3Jlc3RhbnRlcyA+IDA6DQogICAgICAgICAgICAgICAgICAgICAgICBmaWNo
+YXNfcmVzdGFudGVzIC09IDENCiAgICAgICAgICAgICAgICAgICAgICAgIGZp
+Y2hhc19leHBlbmRpZGFzICs9IDENCiAgICAgICAgICAgICAgICAgICAgICAg
+IHVsdGltb19jb250ZW8gPSB0aWVtcG9fYWN0dWFsDQogICAgICAgICAgICAg
+ICAgICAgICAgICBwcmludChmIltGSUNIQSBFWFBFTkRJREFdIFJlc3RhbnRl
+czoge2ZpY2hhc19yZXN0YW50ZXN9IHwgVG90YWwgZXhwZW5kaWRhczoge2Zp
+Y2hhc19leHBlbmRpZGFzfSIpDQoNCiAgICAgICAgICAgICAgICAgICAgICAg
+ICMgQWN0dWFsaXphciByZWdpc3Rybw0KICAgICAgICAgICAgICAgICAgICAg
+ICAgYWN0dWFsaXphcl9yZWdpc3RybygiZmljaGEiLCAxKQ0KICAgICAgICAg
+ICAgICAgICAgICBlbHNlOg0KICAgICAgICAgICAgICAgICAgICAgICAgcHJp
+bnQoIltBRFZFUlRFTkNJQV0gU2Vuc29yIGRldGVjdMOzIGZpY2hhIHBlcm8g
+Y29udGFkb3IgeWEgZXN0w6EgZW4gMCIpDQogICAgICAgICAgICBlbHNlOg0K
+ICAgICAgICAgICAgICAgICMgUmVib3RlIGRldGVjdGFkbyAtIGlnbm9yYXIN
+CiAgICAgICAgICAgICAgICB0aWVtcG9fZGVzZGVfdWx0aW1vID0gKHRpZW1w
+b19hY3R1YWwgLSB1bHRpbW9fY29udGVvKSAqIDEwMDANCiAgICAgICAgICAg
+ICAgICBwcmludChmIltSRUJPVEUgSUdOT1JBRE9dIFNvbG8ge3RpZW1wb19k
+ZXNkZV91bHRpbW86LjFmfW1zIGRlc2RlIMO6bHRpbWEgZmljaGEiKQ0KDQog
+ICAgICAgIGVzdGFkb19hbnRlcmlvcl9zZW5zb3IgPSBlc3RhZG9fYWN0dWFs
+X3NlbnNvcg0KICAgICAgICB0aW1lLnNsZWVwKDAuMDEpICAjIDEwbXMgZGUg
+cG9sbGluZyBkZWwgc2Vuc29yDQo=
