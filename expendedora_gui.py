@@ -184,8 +184,7 @@ class ExpendedoraGUI:
                 self.contadores_apertura = config.get("contadores_apertura", self.contadores_apertura)
                 self.contadores_parciales = config.get("contadores_parciales", self.contadores_parciales)
 
-                # IMPORTANTE: Siempre sincronizar fichas_restantes con el hardware al iniciar
-                # El hardware siempre empieza en 0, así que la GUI también debe empezar en 0
+                # Sincronización: resetear los contadores de fichas al iniciar
                 self.contadores["fichas_restantes"] = 0
                 self.contadores["fichas_expendidas"] = 0
                 print("[GUI] Configuración cargada. Contadores de fichas sincronizados con el hardware.")
@@ -561,6 +560,10 @@ class ExpendedoraGUI:
         fichas_restantes_hw = core.obtener_fichas_restantes()
         fichas_expendidas_hw = core.obtener_fichas_expendidas()
 
+        # Log de depuración para ver sincronización
+        print(f"[SYNC] Hardware fichas_restantes: {fichas_restantes_hw}")
+        print(f"[SYNC] GUI fichas_restantes antes de sync: {self.contadores['fichas_restantes']}")
+
         # Calcular diferencia de fichas expendidas
         diferencia_expendidas = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
 
@@ -573,7 +576,6 @@ class ExpendedoraGUI:
 
         # Actualizar fichas restantes (estado instantáneo, no acumulativo)
         self.contadores["fichas_restantes"] = fichas_restantes_hw
-        # Los contadores de apertura/parciales para fichas_restantes no se usan porque es un estado instantáneo
 
         # Actualizar GUI
         self.actualizar_contadores_gui()
@@ -584,4 +586,5 @@ class ExpendedoraGUI:
 if __name__ == "__main__":
     root = tk.Tk()
     app = ExpendedoraGUI(root, "username")  # Reemplazar "username" con el nombre de usuario actual
+
     root.mainloop()
