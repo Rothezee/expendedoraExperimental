@@ -140,24 +140,33 @@ core.agregar_fichas(5)
 ## Configuración de Hardware
 
 ```python
-MOTOR_PIN = 24         # Pin GPIO del motor
-ENTHOPER = 23          # Pin GPIO del sensor del hopper
-DEBOUNCE_TIME = 0.3    # Tiempo anti-rebote (segundos)
+MOTOR_PIN = 24       # Pin GPIO del motor
+ENTHOPER = 23        # Pin GPIO del sensor del hopper
+PULSO_MIN = 0.05     # 50ms - Duración mínima del pulso (filtro de ruido)
+PULSO_MAX = 0.5      # 500ms - Duración máxima del pulso (detección de atascos)
 
 # Sensor configurado con pull-up
 # Estado normal: HIGH
-# Ficha detectada: LOW (flanco descendente)
+# Ficha detectada: LOW -> HIGH (pulso completo)
 ```
 
-### Ajuste del Anti-Rebote (DEBOUNCE_TIME)
+### Detección de Pulso Completo
 
-El valor de `DEBOUNCE_TIME` determina el tiempo mínimo entre dos fichas consecutivas:
+El sistema detecta un **pulso completo** en lugar de solo flancos:
 
-- **0.5 segundos**: Motor lento (2 fichas/seg) - Máxima protección contra rebotes
-- **0.3 segundos**: Motor medio (3 fichas/seg) - **Configuración actual**
-- **0.2 segundos**: Motor rápido (5 fichas/seg) - Menor protección
+```
+HIGH (sin ficha) → LOW (ficha bloquea) → HIGH (ficha pasó)
+         |              [50-500ms]            |
+         +--------- Solo aquí se cuenta ------+
+```
 
-**⚠️ Ajustar según la velocidad real del motor para evitar conteos múltiples**
+**Ventajas:**
+- ✅ Independiente de la velocidad del motor
+- ✅ Elimina rebotes automáticamente
+- ✅ Filtra ruido eléctrico (< 50ms)
+- ✅ Detecta atascos (> 500ms)
+
+**Ver `CONFIGURACION_SENSOR.md` para ajustes detallados**
 
 ## Ventajas del Sistema
 

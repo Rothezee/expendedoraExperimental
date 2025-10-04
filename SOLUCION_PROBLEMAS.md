@@ -38,53 +38,64 @@ El sensor tiene "rebote" (bounce) - cuando una ficha pasa, el sensor puede detec
 - Ruido eléctrico
 - Motor muy rápido
 
-### Solución Implementada: Anti-Rebote (Debounce)
+### Solución Implementada: Detección de Pulso Completo
 
-#### Configuración
+#### Nueva Configuración (MEJORADA)
 ```python
 # En expendedora_core.py
-DEBOUNCE_TIME = 0.3  # Tiempo mínimo entre fichas (segundos)
+PULSO_MIN = 0.05  # 50ms - Duración mínima del pulso
+PULSO_MAX = 0.5   # 500ms - Duración máxima del pulso
 ```
 
 #### Cómo funciona
 ```python
-ultimo_conteo = 0
+# Máquina de estados: Espera el pulso COMPLETO
+# HIGH -> LOW (ficha entra) -> HIGH (ficha sale)
 
-# Al detectar flanco descendente
-if tiempo_actual - ultimo_conteo >= DEBOUNCE_TIME:
-    # Contar la ficha
-    fichas_restantes -= 1
-    ultimo_conteo = tiempo_actual
-else:
-    # Ignorar - es un rebote
-    print("[REBOTE IGNORADO]")
+Estado 1: Sensor en HIGH (esperando ficha)
+  └─> Detecta LOW: Ficha entrando, inicia timer
+
+Estado 2: Sensor en LOW (ficha bloqueando)
+  └─> Detecta HIGH: Ficha salió, medir duración
+      └─> Si duración válida (50ms-500ms): CONTAR FICHA
+      └─> Si duración < 50ms: IGNORAR (ruido)
+      └─> Si duración > 500ms: ADVERTIR (atasco)
 ```
 
-### Ajustar el Tiempo de Anti-Rebote
+### Ventajas sobre el método anterior:
 
-El valor de `DEBOUNCE_TIME` depende de:
-1. **Velocidad del motor**: Más rápido = tiempo menor
-2. **Tipo de fichas**: Más grandes = tiempo mayor
-3. **Características del sensor**: Sensibilidad
+✅ **No depende de la velocidad del motor**
+✅ **Filtra rebotes automáticamente** (solo cuenta pulsos completos)
+✅ **Detecta ruido** (pulsos muy cortos)
+✅ **Detecta atascos** (pulsos muy largos)
 
-#### Valores recomendados:
-- **Motor lento**: 0.5 segundos (2 fichas por segundo)
-- **Motor medio**: 0.3 segundos (3 fichas por segundo) ← **ACTUAL**
-- **Motor rápido**: 0.2 segundos (5 fichas por segundo)
+### Ajustar los Tiempos de Pulso
 
-#### Cómo ajustar:
-1. Editar `expendedora_core.py`
-2. Cambiar el valor de `DEBOUNCE_TIME`
-3. Reiniciar el sistema
-4. Probar con una cantidad conocida de fichas
+#### Si las fichas NO se cuentan:
+```python
+# Revisar logs para:
+[RUIDO IGNORADO] Pulso muy corto: 15.3ms
+  → Solución: AUMENTAR PULSO_MIN a 0.08
+
+[ADVERTENCIA] Pulso muy largo: 850.2ms
+  → Solución: AUMENTAR PULSO_MAX a 0.8
+```
+
+#### Si se cuentan múltiples veces (raro con este método):
+- Verificar que el sensor tenga pull-up
+- Verificar conexión física del sensor
+- Ver documentación en `CONFIGURACION_SENSOR.md`
 
 ### Prueba de Calibración
 
 ```bash
-# Agregar 10 fichas
-# Verificar cuántas salen realmente
-# Si salen más de 10: AUMENTAR DEBOUNCE_TIME
-# Si salen menos de 10: DISMINUIR DEBOUNCE_TIME (cuidado)
+# Agregar exactamente 10 fichas
+# Verificar logs del sensor:
+[SENSOR] Ficha detectada entrando...
+[FICHA EXPENDIDA] Restantes: 9 | Total: 1 | Duración: 120.5ms
+
+# Resultado esperado: 10 fichas expendidas
+# Si es diferente: Ver CONFIGURACION_SENSOR.md
 ```
 
 ## Problema 3: El motor no arranca cuando se agregan fichas
