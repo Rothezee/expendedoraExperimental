@@ -560,24 +560,29 @@ class ExpendedoraGUI:
         fichas_restantes_hw = core.obtener_fichas_restantes()
         fichas_expendidas_hw = core.obtener_fichas_expendidas()
 
-        # Log de depuración para ver sincronización
-        print(f"[SYNC] Hardware fichas_restantes: {fichas_restantes_hw}")
-        print(f"[SYNC] GUI fichas_restantes antes de sync: {self.contadores['fichas_restantes']}")
-
         # Calcular diferencia de fichas expendidas
         diferencia_expendidas = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
 
+        # Calcular diferencia de fichas restantes
+        diferencia_restantes = fichas_restantes_hw - self.contadores["fichas_restantes"]
+
+        # Actualizar fichas expendidas si aumentaron
         if diferencia_expendidas > 0:
-            # Se expendieron fichas desde el hardware
             self.contadores["fichas_expendidas"] = fichas_expendidas_hw
             self.contadores_apertura["fichas_expendidas"] += diferencia_expendidas
             self.contadores_parciales["fichas_expendidas"] += diferencia_expendidas
-            print(f"[GUI] Fichas expendidas: +{diferencia_expendidas} (Total: {fichas_expendidas_hw})")
+            print(f"[GUI SYNC] Fichas expendidas: +{diferencia_expendidas} (Total: {fichas_expendidas_hw})")
 
-        # Actualizar fichas restantes (estado instantáneo, no acumulativo)
-        self.contadores["fichas_restantes"] = fichas_restantes_hw
+        # SIEMPRE sincronizar fichas restantes con el hardware
+        if diferencia_restantes != 0:
+            antiguo = self.contadores["fichas_restantes"]
+            self.contadores["fichas_restantes"] = fichas_restantes_hw
+            print(f"[GUI SYNC] Fichas restantes: {antiguo} -> {fichas_restantes_hw}")
+        else:
+            # Forzar actualización incluso si no hay diferencia
+            self.contadores["fichas_restantes"] = fichas_restantes_hw
 
-        # Actualizar GUI
+        # SIEMPRE actualizar la GUI para asegurar que se muestre correctamente
         self.actualizar_contadores_gui()
 
         # Programar próxima actualización
