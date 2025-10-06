@@ -62,6 +62,9 @@ class ExpendedoraGUI:
         self.config_file = "config.json"
         self.cargar_configuracion()
 
+        # Registrar callbacks con el hardware
+        self.registrar_callbacks_hardware()
+
         # Header
         self.header_frame = tk.Frame(root, bg="#333")
         self.header_frame.pack(side="top", fill="x")
@@ -149,7 +152,6 @@ class ExpendedoraGUI:
         self.footer_label.pack(pady=5)
 
         self.actualizar_fecha_hora()  # Llamar a la función para mostrar la fecha y hora
-        self.actualizar_desde_hardware()  # Iniciar actualización desde el hardware
 
         self.mostrar_frame(self.main_frame)
 
@@ -173,6 +175,55 @@ class ExpendedoraGUI:
         for f in [self.main_frame, self.config_frame, self.reportes_frame, self.simulacion_frame]:
             f.pack_forget()
         frame.pack(fill="both", expand=True)
+
+    def registrar_callbacks_hardware(self):
+        """Registra las funciones de callback para recibir notificaciones del hardware"""
+        print("[GUI] Registrando callbacks con el hardware...")
+
+        # Callback cuando sale una ficha
+        core.registrar_callback_ficha_expendida(self.on_ficha_expendida)
+
+        # Callback cuando se agregan fichas
+        core.registrar_callback_fichas_agregadas(self.on_fichas_agregadas)
+
+        print("[GUI] Callbacks registrados correctamente")
+
+    def on_ficha_expendida(self, fichas_restantes_hw, fichas_expendidas_hw):
+        """
+        Callback llamado desde el hardware cuando sale una ficha.
+        Se ejecuta en el hilo del hardware, por lo que usamos after() para actualizar la GUI.
+        """
+        def actualizar():
+            # Calcular cuántas fichas nuevas se expendieron
+            diferencia = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
+
+            if diferencia > 0:
+                # Actualizar contadores
+                self.contadores["fichas_expendidas"] = fichas_expendidas_hw
+                self.contadores["fichas_restantes"] = fichas_restantes_hw
+                self.contadores_apertura["fichas_expendidas"] += diferencia
+                self.contadores_parciales["fichas_expendidas"] += diferencia
+
+                print(f"[GUI] ← FICHA EXPENDIDA | Restantes: {fichas_restantes_hw} | Total: {fichas_expendidas_hw}")
+
+                # Actualizar la GUI
+                self.actualizar_contadores_gui()
+
+        # Programar la actualización en el hilo principal de Tkinter
+        self.root.after(0, actualizar)
+
+    def on_fichas_agregadas(self, fichas_restantes_hw):
+        """
+        Callback llamado desde el hardware cuando se agregan fichas.
+        Se ejecuta en el hilo del hardware, por lo que usamos after() para actualizar la GUI.
+        """
+        def actualizar():
+            self.contadores["fichas_restantes"] = fichas_restantes_hw
+            print(f"[GUI] ← FICHAS AGREGADAS | Restantes: {fichas_restantes_hw}")
+            self.actualizar_contadores_gui()
+
+        # Programar la actualización en el hilo principal de Tkinter
+        self.root.after(0, actualizar)
 
     def cargar_configuracion(self):
         if os.path.exists(self.config_file):
@@ -554,39 +605,10 @@ class ExpendedoraGUI:
         self.footer_label.config(text=current_time)  # Actualizar el label del footer
         self.footer_label.after(1000, self.actualizar_fecha_hora)  # Llamar a esta función cada segundo
 
-    def actualizar_desde_hardware(self):
-        """Actualiza los contadores desde el hardware cada 500ms"""
-        # Obtener valores del core
-        fichas_restantes_hw = core.obtener_fichas_restantes()
-        fichas_expendidas_hw = core.obtener_fichas_expendidas()
-
-        # Calcular diferencia de fichas expendidas
-        diferencia_expendidas = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
-
-        # Calcular diferencia de fichas restantes
-        diferencia_restantes = fichas_restantes_hw - self.contadores["fichas_restantes"]
-
-        # Actualizar fichas expendidas si aumentaron
-        if diferencia_expendidas > 0:
-            self.contadores["fichas_expendidas"] = fichas_expendidas_hw
-            self.contadores_apertura["fichas_expendidas"] += diferencia_expendidas
-            self.contadores_parciales["fichas_expendidas"] += diferencia_expendidas
-            print(f"[GUI SYNC] Fichas expendidas: +{diferencia_expendidas} (Total: {fichas_expendidas_hw})")
-
-        # SIEMPRE sincronizar fichas restantes con el hardware
-        if diferencia_restantes != 0:
-            antiguo = self.contadores["fichas_restantes"]
-            self.contadores["fichas_restantes"] = fichas_restantes_hw
-            print(f"[GUI SYNC] Fichas restantes: {antiguo} -> {fichas_restantes_hw}")
-        else:
-            # Forzar actualización incluso si no hay diferencia
-            self.contadores["fichas_restantes"] = fichas_restantes_hw
-
-        # SIEMPRE actualizar la GUI para asegurar que se muestre correctamente
-        self.actualizar_contadores_gui()
-
-        # Programar próxima actualización
-        self.root.after(500, self.actualizar_desde_hardware)
+    # NOTA: Esta función ya no es necesaria - ahora usamos callbacks en tiempo real
+    # def actualizar_desde_hardware(self):
+    #     Los callbacks on_ficha_expendida() y on_fichas_agregadas()
+    #     actualizan la GUI inmediatamente cuando hay cambios en el hardware
 
 if __name__ == "__main__":
     root = tk.Tk()
