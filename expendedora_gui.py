@@ -199,8 +199,10 @@ class ExpendedoraGUI:
         Callback llamado desde el hardware cuando sale una ficha.
         Se ejecuta en el hilo del hardware, usa cola thread-safe.
         """
+        print(f"[CALLBACK HW→GUI] Poniendo en cola: Restantes={fichas_restantes_hw}, Total={fichas_expendidas_hw}")
         # Enviar actualización a la cola
         self.update_queue.put(('ficha_expendida', fichas_restantes_hw, fichas_expendidas_hw))
+        print(f"[CALLBACK HW→GUI] Cola size: {self.update_queue.qsize()}")
 
     def on_fichas_agregadas(self, fichas_restantes_hw):
         """
@@ -215,10 +217,12 @@ class ExpendedoraGUI:
         Procesa actualizaciones de la cola en el hilo principal de Tkinter.
         Se ejecuta cada 50ms para procesar cambios del hardware rápidamente.
         """
+        procesados = 0
         try:
             # Procesar todos los mensajes pendientes en la cola
             while True:
                 mensaje = self.update_queue.get_nowait()
+                procesados += 1
 
                 if mensaje[0] == 'ficha_expendida':
                     _, fichas_restantes_hw, fichas_expendidas_hw = mensaje
@@ -247,6 +251,9 @@ class ExpendedoraGUI:
         except queue.Empty:
             # No hay más mensajes en la cola
             pass
+
+        if procesados > 0:
+            print(f"[COLA GUI] Procesados {procesados} mensajes")
 
         # Programar siguiente procesamiento en 50ms
         self.root.after(50, self.procesar_cola_actualizaciones)
