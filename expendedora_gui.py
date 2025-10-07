@@ -200,20 +200,43 @@ class ExpendedoraGUI:
     def on_ficha_expendida(self, fichas_restantes_hw, fichas_expendidas_hw):
         """
         Callback llamado desde el hardware cuando sale una ficha.
-        Se ejecuta en el hilo del hardware, usa cola thread-safe.
+        Actualiza directamente los contadores (thread-safe).
         """
-        print(f"[CALLBACK HW→GUI] Poniendo en cola: Restantes={fichas_restantes_hw}, Total={fichas_expendidas_hw}")
-        # Enviar actualización a la cola
-        self.update_queue.put(('ficha_expendida', fichas_restantes_hw, fichas_expendidas_hw))
-        print(f"[CALLBACK HW→GUI] Cola size: {self.update_queue.qsize()}")
+        print(f"[CALLBACK HW→GUI] Actualizando: Restantes={fichas_restantes_hw}, Total={fichas_expendidas_hw}")
+
+        # Calcular cuántas fichas nuevas se expendieron
+        diferencia = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
+
+        if diferencia > 0:
+            # Actualizar contadores
+            self.contadores["fichas_expendidas"] = fichas_expendidas_hw
+            self.contadores["fichas_restantes"] = fichas_restantes_hw
+            self.contadores_apertura["fichas_expendidas"] += diferencia
+            self.contadores_parciales["fichas_expendidas"] += diferencia
+
+            print(f"[GUI] ✓ CONTADORES ACTUALIZADOS | Restantes: {fichas_restantes_hw} | Total: {fichas_expendidas_hw} | +{diferencia}")
+
+            # Actualizar la GUI en el hilo principal
+            try:
+                self.root.after(0, self.actualizar_contadores_gui)
+            except:
+                # Si after() falla, actualizar directamente
+                self.actualizar_contadores_gui()
 
     def on_fichas_agregadas(self, fichas_restantes_hw):
         """
         Callback llamado desde el hardware cuando se agregan fichas.
-        Se ejecuta en el hilo del hardware, usa cola thread-safe.
+        Actualiza directamente los contadores (thread-safe).
         """
-        # Enviar actualización a la cola
-        self.update_queue.put(('fichas_agregadas', fichas_restantes_hw))
+        self.contadores["fichas_restantes"] = fichas_restantes_hw
+        print(f"[GUI] ✓ FICHAS AGREGADAS | Restantes: {fichas_restantes_hw}")
+
+        # Actualizar la GUI en el hilo principal
+        try:
+            self.root.after(0, self.actualizar_contadores_gui)
+        except:
+            # Si after() falla, actualizar directamente
+            self.actualizar_contadores_gui()
 
     def procesar_cola_actualizaciones(self):
         """

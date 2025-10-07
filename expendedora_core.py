@@ -243,6 +243,16 @@ def controlar_motor():
                                     callback_ficha_expendida(fichas_restantes, fichas_expendidas)
                                 except Exception as e:
                                     print(f"[ERROR] Callback GUI falló: {e}")
+
+                            # Si se acabaron las fichas, forzar actualización GUI
+                            if fichas_restantes == 0:
+                                print(f"[CORE→GUI] Todas las fichas expendidas. Total: {fichas_expendidas}")
+                                if callback_ficha_expendida:
+                                    try:
+                                        # Llamar de nuevo para asegurar actualización final
+                                        callback_ficha_expendida(0, fichas_expendidas)
+                                    except Exception as e:
+                                        print(f"[ERROR] Callback final falló: {e}")
                         else:
                             print("[ADVERTENCIA] Sensor detectó ficha pero contador ya está en 0")
                 elif duracion_pulso < PULSO_MIN:
