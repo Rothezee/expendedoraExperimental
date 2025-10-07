@@ -157,7 +157,10 @@ class ExpendedoraGUI:
         self.footer_label.pack(pady=5)
 
         self.actualizar_fecha_hora()  # Llamar a la función para mostrar la fecha y hora
-        self.procesar_cola_actualizaciones()  # Iniciar procesamiento de cola
+
+        # Iniciar procesamiento de cola después de que el mainloop esté activo
+        self.root.after(100, self.procesar_cola_actualizaciones)
+        print("[GUI] Procesamiento de cola programado")
 
         self.mostrar_frame(self.main_frame)
 
