@@ -39,7 +39,15 @@ motor_activo = False
 # --- LOCK PARA THREADING ---
 fichas_lock = threading.Lock()
 
-# --- FUNCIONES PARA ACCESO THREAD-SAFE A CONTADORES ---
+# --- CALLBACK SIMPLE PARA NOTIFICAR CAMBIOS ---
+gui_actualizar_funcion = None  # Función simple que actualiza la GUI cuando cambian los contadores
+
+def registrar_gui_actualizar(funcion):
+    """Registra la función de actualización de la GUI"""
+    global gui_actualizar_funcion
+    gui_actualizar_funcion = funcion
+    print("[CORE] Función de actualización GUI registrada")
+
 def get_fichas_restantes():
     """Obtener fichas_restantes de forma thread-safe"""
     with fichas_lock:
@@ -226,16 +234,26 @@ def controlar_motor():
                 # Verificar que el pulso duró un tiempo razonable
                 if PULSO_MIN <= duracion_pulso <= PULSO_MAX:
                     # Contar la ficha
+                    cambio_realizado = False
                     with fichas_lock:
                         if fichas_restantes > 0:
                             fichas_restantes -= 1
                             fichas_expendidas += 1
+                            cambio_realizado = True
                             print(f"[FICHA EXPENDIDA] Restantes: {fichas_restantes} | Total: {fichas_expendidas} | Duración: {duracion_pulso*1000:.1f}ms")
 
                             # Actualizar registro
                             actualizar_registro("ficha", 1)
                         else:
                             print("[ADVERTENCIA] Sensor detectó ficha pero contador ya está en 0")
+
+                    # NOTIFICAR A LA GUI (fuera del lock para evitar deadlock)
+                    if cambio_realizado and gui_actualizar_funcion:
+                        try:
+                            gui_actualizar_funcion()
+                        except Exception as e:
+                            print(f"[ERROR] GUI actualizar falló: {e}")
+
                 elif duracion_pulso < PULSO_MIN:
                     print(f"[RUIDO IGNORADO] Pulso muy corto: {duracion_pulso*1000:.1f}ms")
                 else:
@@ -249,13 +267,20 @@ def controlar_motor():
 def agregar_fichas(cantidad):
     """
     Agrega fichas al contador para que el motor las expenda.
-    La GUI lee directamente usando get_fichas_restantes().
+    Notifica a la GUI inmediatamente del cambio.
     """
     global fichas_restantes
 
     with fichas_lock:
         fichas_restantes += cantidad
         print(f"[FICHAS AGREGADAS] +{cantidad} | Total pendientes: {fichas_restantes}")
+
+    # NOTIFICAR A LA GUI (fuera del lock)
+    if gui_actualizar_funcion:
+        try:
+            gui_actualizar_funcion()
+        except Exception as e:
+            print(f"[ERROR] GUI actualizar falló: {e}")
 
     return fichas_restantes
 

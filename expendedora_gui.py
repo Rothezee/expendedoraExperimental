@@ -62,6 +62,9 @@ class ExpendedoraGUI:
         self.config_file = "config.json"
         self.cargar_configuracion()
 
+        # Registrar función de actualización con el core
+        core.registrar_gui_actualizar(self.sincronizar_desde_core)
+
         # Header
         self.header_frame = tk.Frame(root, bg="#333")
         self.header_frame.pack(side="top", fill="x")
@@ -150,9 +153,7 @@ class ExpendedoraGUI:
 
         self.actualizar_fecha_hora()
 
-        # Iniciar sincronización directa con el core (polling cada 100ms)
-        self.root.after(100, self.sincronizar_contadores_con_core)
-        print("[GUI] Sincronización con core iniciada (polling 100ms)")
+        print("[GUI] Sincronización con core configurada (actualización por eventos)")
 
         self.mostrar_frame(self.main_frame)
 
@@ -177,36 +178,42 @@ class ExpendedoraGUI:
             f.pack_forget()
         frame.pack(fill="both", expand=True)
 
-    def sincronizar_contadores_con_core(self):
+    def sincronizar_desde_core(self):
         """
-        Lee directamente los contadores del core (polling cada 100ms).
-        Elimina la necesidad de callbacks y colas thread-safe.
+        Llamada por el core cuando cambian los contadores.
+        Lee directamente los valores actuales y actualiza la GUI.
+        Se ejecuta en el hilo del core, usa root.after() para thread-safety.
         """
-        # Leer valores actuales del core (thread-safe)
-        fichas_restantes_hw = core.get_fichas_restantes()
-        fichas_expendidas_hw = core.get_fichas_expendidas()
+        def _actualizar():
+            # Leer valores actuales del core (thread-safe)
+            fichas_restantes_hw = core.get_fichas_restantes()
+            fichas_expendidas_hw = core.get_fichas_expendidas()
 
-        # Detectar cambios en fichas expendidas
-        diferencia = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
+            # Detectar cambios en fichas expendidas
+            diferencia = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
 
-        if diferencia > 0:
-            # Se expendieron fichas
-            self.contadores["fichas_expendidas"] = fichas_expendidas_hw
-            self.contadores["fichas_restantes"] = fichas_restantes_hw
-            self.contadores_apertura["fichas_expendidas"] += diferencia
-            self.contadores_parciales["fichas_expendidas"] += diferencia
+            if diferencia > 0:
+                # Se expendieron fichas
+                self.contadores["fichas_expendidas"] = fichas_expendidas_hw
+                self.contadores["fichas_restantes"] = fichas_restantes_hw
+                self.contadores_apertura["fichas_expendidas"] += diferencia
+                self.contadores_parciales["fichas_expendidas"] += diferencia
 
-            print(f"[GUI] ✓ SINCRONIZADO | Restantes: {fichas_restantes_hw} | Total: {fichas_expendidas_hw} | +{diferencia}")
-            self.actualizar_contadores_gui()
+                print(f"[GUI] ✓ SINCRONIZADO | Restantes: {fichas_restantes_hw} | Total: {fichas_expendidas_hw} | +{diferencia}")
+                self.actualizar_contadores_gui()
 
-        elif fichas_restantes_hw != self.contadores["fichas_restantes"]:
-            # Solo cambió fichas_restantes (se agregaron fichas)
-            self.contadores["fichas_restantes"] = fichas_restantes_hw
-            print(f"[GUI] ✓ FICHAS AGREGADAS | Restantes: {fichas_restantes_hw}")
-            self.actualizar_contadores_gui()
+            elif fichas_restantes_hw != self.contadores["fichas_restantes"]:
+                # Solo cambió fichas_restantes (se agregaron fichas)
+                self.contadores["fichas_restantes"] = fichas_restantes_hw
+                print(f"[GUI] ✓ FICHAS AGREGADAS | Restantes: {fichas_restantes_hw}")
+                self.actualizar_contadores_gui()
 
-        # Repetir cada 100ms (10 veces por segundo)
-        self.root.after(100, self.sincronizar_contadores_con_core)
+        # Programar actualización en el hilo de Tkinter
+        try:
+            self.root.after(0, _actualizar)
+        except:
+            # Si after() no funciona, ejecutar directamente
+            _actualizar()
 
     def cargar_configuracion(self):
         if os.path.exists(self.config_file):
