@@ -39,9 +39,16 @@ motor_activo = False
 # --- LOCK PARA THREADING ---
 fichas_lock = threading.Lock()
 
-# --- CALLBACK PARA NOTIFICAR CAMBIOS A LA GUI ---
-callback_ficha_expendida = None  # Función que se llama cuando sale una ficha
-callback_fichas_agregadas = None  # Función que se llama cuando se agregan fichas
+# --- FUNCIONES PARA ACCESO THREAD-SAFE A CONTADORES ---
+def get_fichas_restantes():
+    """Obtener fichas_restantes de forma thread-safe"""
+    with fichas_lock:
+        return fichas_restantes
+
+def get_fichas_expendidas():
+    """Obtener fichas_expendidas de forma thread-safe"""
+    with fichas_lock:
+        return fichas_expendidas
 
 # ----------CONEXION CON GUI Y LOGICA PARA GUARDAR REGISTROS---------------
 def cargar_configuracion():
@@ -97,15 +104,6 @@ def realizar_cierre():
     return registro
 
 # --- FUNCIONES PARA REGISTRAR CALLBACKS ---
-def registrar_callback_ficha_expendida(funcion):
-    """Registra una función que se llamará cada vez que salga una ficha"""
-    global callback_ficha_expendida
-    callback_ficha_expendida = funcion
-
-def registrar_callback_fichas_agregadas(funcion):
-    """Registra una función que se llamará cada vez que se agreguen fichas"""
-    global callback_fichas_agregadas
-    callback_fichas_agregadas = funcion
 
 # --- CONFIGURACIÓN GPIO ---
 GPIO.setmode(GPIO.BCM)
@@ -181,9 +179,9 @@ def controlar_motor():
     - Motor apagado si fichas_restantes == 0
     - Sensor cuenta fichas que salen y decrementa fichas_restantes
     - Implementa detección de pulso completo (HIGH->LOW->HIGH)
-    - Notifica a la GUI mediante callback cuando sale una ficha
+    - La GUI lee directamente las variables globales (thread-safe via funciones get)
     """
-    global motor_activo, fichas_restantes, fichas_expendidas, callback_ficha_expendida
+    global motor_activo, fichas_restantes, fichas_expendidas
 
     estado_anterior_sensor = GPIO.input(ENTHOPER)
     ficha_en_sensor = False  # Flag para detectar pulso completo
@@ -236,23 +234,6 @@ def controlar_motor():
 
                             # Actualizar registro
                             actualizar_registro("ficha", 1)
-
-                            # NOTIFICAR A LA GUI INMEDIATAMENTE
-                            if callback_ficha_expendida:
-                                try:
-                                    callback_ficha_expendida(fichas_restantes, fichas_expendidas)
-                                except Exception as e:
-                                    print(f"[ERROR] Callback GUI falló: {e}")
-
-                            # Si se acabaron las fichas, forzar actualización GUI
-                            if fichas_restantes == 0:
-                                print(f"[CORE→GUI] Todas las fichas expendidas. Total: {fichas_expendidas}")
-                                if callback_ficha_expendida:
-                                    try:
-                                        # Llamar de nuevo para asegurar actualización final
-                                        callback_ficha_expendida(0, fichas_expendidas)
-                                    except Exception as e:
-                                        print(f"[ERROR] Callback final falló: {e}")
                         else:
                             print("[ADVERTENCIA] Sensor detectó ficha pero contador ya está en 0")
                 elif duracion_pulso < PULSO_MIN:
@@ -267,21 +248,14 @@ def controlar_motor():
 # --- FUNCIÓN PARA AGREGAR FICHAS (LLAMADA DESDE LA GUI) ---
 def agregar_fichas(cantidad):
     """
-    Agrega fichas al contador para que el motor las expenda
-    Notifica a la GUI mediante callback
+    Agrega fichas al contador para que el motor las expenda.
+    La GUI lee directamente usando get_fichas_restantes().
     """
-    global fichas_restantes, callback_fichas_agregadas
+    global fichas_restantes
 
     with fichas_lock:
         fichas_restantes += cantidad
         print(f"[FICHAS AGREGADAS] +{cantidad} | Total pendientes: {fichas_restantes}")
-
-        # NOTIFICAR A LA GUI INMEDIATAMENTE
-        if callback_fichas_agregadas:
-            try:
-                callback_fichas_agregadas(fichas_restantes)
-            except Exception as e:
-                print(f"[ERROR] Callback GUI falló: {e}")
 
     return fichas_restantes
 

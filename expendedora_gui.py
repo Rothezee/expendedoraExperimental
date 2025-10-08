@@ -6,8 +6,6 @@ from datetime import datetime
 import requests
 from User_management import UserManagement
 import expendedora_core as core
-import queue
-import threading
 
 url = "http://192.168.1.33/esp32_project/expendedora/insert_close_expendedora.php"  # URL DE CIERRES y subcierres
 urlDatos = "http://192.168.1.33/esp32_project/expendedora/insert_data_expendedora.php"  # URL DE REPORTES
@@ -21,9 +19,6 @@ class ExpendedoraGUI:
         self.root.title("Expendedora - Control")
         self.root.geometry("800x500")
         self.root.configure(bg="#f0f0f0")
-
-        # Cola thread-safe para comunicación entre hilos
-        self.update_queue = queue.Queue()
 
         # Inicializar variables de configuración
         self.promociones = {
@@ -66,9 +61,6 @@ class ExpendedoraGUI:
         # Archivo de configuración
         self.config_file = "config.json"
         self.cargar_configuracion()
-
-        # Registrar callbacks con el hardware
-        self.registrar_callbacks_hardware()
 
         # Header
         self.header_frame = tk.Frame(root, bg="#333")
@@ -156,11 +148,11 @@ class ExpendedoraGUI:
         self.footer_label = tk.Label(self.footer_frame, text="", bg="#333", fg="white", font=("Arial", 12))
         self.footer_label.pack(pady=5)
 
-        self.actualizar_fecha_hora()  # Llamar a la función para mostrar la fecha y hora
+        self.actualizar_fecha_hora()
 
-        # Iniciar procesamiento de cola después de que el mainloop esté activo
-        self.root.after(100, self.procesar_cola_actualizaciones)
-        print("[GUI] Procesamiento de cola programado")
+        # Iniciar sincronización directa con el core (polling cada 100ms)
+        self.root.after(100, self.sincronizar_contadores_con_core)
+        print("[GUI] Sincronización con core iniciada (polling 100ms)")
 
         self.mostrar_frame(self.main_frame)
 
@@ -185,104 +177,36 @@ class ExpendedoraGUI:
             f.pack_forget()
         frame.pack(fill="both", expand=True)
 
-    def registrar_callbacks_hardware(self):
-        """Registra las funciones de callback para recibir notificaciones del hardware"""
-        print("[GUI] Registrando callbacks con el hardware...")
-
-        # Callback cuando sale una ficha
-        core.registrar_callback_ficha_expendida(self.on_ficha_expendida)
-
-        # Callback cuando se agregan fichas
-        core.registrar_callback_fichas_agregadas(self.on_fichas_agregadas)
-
-        print("[GUI] Callbacks registrados correctamente")
-
-    def on_ficha_expendida(self, fichas_restantes_hw, fichas_expendidas_hw):
+    def sincronizar_contadores_con_core(self):
         """
-        Callback llamado desde el hardware cuando sale una ficha.
-        Actualiza directamente los contadores (thread-safe).
+        Lee directamente los contadores del core (polling cada 100ms).
+        Elimina la necesidad de callbacks y colas thread-safe.
         """
-        print(f"[CALLBACK HW→GUI] Actualizando: Restantes={fichas_restantes_hw}, Total={fichas_expendidas_hw}")
+        # Leer valores actuales del core (thread-safe)
+        fichas_restantes_hw = core.get_fichas_restantes()
+        fichas_expendidas_hw = core.get_fichas_expendidas()
 
-        # Calcular cuántas fichas nuevas se expendieron
+        # Detectar cambios en fichas expendidas
         diferencia = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
 
         if diferencia > 0:
-            # Actualizar contadores
+            # Se expendieron fichas
             self.contadores["fichas_expendidas"] = fichas_expendidas_hw
             self.contadores["fichas_restantes"] = fichas_restantes_hw
             self.contadores_apertura["fichas_expendidas"] += diferencia
             self.contadores_parciales["fichas_expendidas"] += diferencia
 
-            print(f"[GUI] ✓ CONTADORES ACTUALIZADOS | Restantes: {fichas_restantes_hw} | Total: {fichas_expendidas_hw} | +{diferencia}")
-
-            # Actualizar la GUI en el hilo principal
-            try:
-                self.root.after(0, self.actualizar_contadores_gui)
-            except:
-                # Si after() falla, actualizar directamente
-                self.actualizar_contadores_gui()
-
-    def on_fichas_agregadas(self, fichas_restantes_hw):
-        """
-        Callback llamado desde el hardware cuando se agregan fichas.
-        Actualiza directamente los contadores (thread-safe).
-        """
-        self.contadores["fichas_restantes"] = fichas_restantes_hw
-        print(f"[GUI] ✓ FICHAS AGREGADAS | Restantes: {fichas_restantes_hw}")
-
-        # Actualizar la GUI en el hilo principal
-        try:
-            self.root.after(0, self.actualizar_contadores_gui)
-        except:
-            # Si after() falla, actualizar directamente
+            print(f"[GUI] ✓ SINCRONIZADO | Restantes: {fichas_restantes_hw} | Total: {fichas_expendidas_hw} | +{diferencia}")
             self.actualizar_contadores_gui()
 
-    def procesar_cola_actualizaciones(self):
-        """
-        Procesa actualizaciones de la cola en el hilo principal de Tkinter.
-        Se ejecuta cada 50ms para procesar cambios del hardware rápidamente.
-        """
-        procesados = 0
-        try:
-            # Procesar todos los mensajes pendientes en la cola
-            while True:
-                mensaje = self.update_queue.get_nowait()
-                procesados += 1
+        elif fichas_restantes_hw != self.contadores["fichas_restantes"]:
+            # Solo cambió fichas_restantes (se agregaron fichas)
+            self.contadores["fichas_restantes"] = fichas_restantes_hw
+            print(f"[GUI] ✓ FICHAS AGREGADAS | Restantes: {fichas_restantes_hw}")
+            self.actualizar_contadores_gui()
 
-                if mensaje[0] == 'ficha_expendida':
-                    _, fichas_restantes_hw, fichas_expendidas_hw = mensaje
-
-                    # Calcular cuántas fichas nuevas se expendieron
-                    diferencia = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
-
-                    if diferencia > 0:
-                        # Actualizar contadores
-                        self.contadores["fichas_expendidas"] = fichas_expendidas_hw
-                        self.contadores["fichas_restantes"] = fichas_restantes_hw
-                        self.contadores_apertura["fichas_expendidas"] += diferencia
-                        self.contadores_parciales["fichas_expendidas"] += diferencia
-
-                        print(f"[GUI] ← FICHA EXPENDIDA | Restantes: {fichas_restantes_hw} | Total: {fichas_expendidas_hw}")
-
-                        # Actualizar la GUI
-                        self.actualizar_contadores_gui()
-
-                elif mensaje[0] == 'fichas_agregadas':
-                    _, fichas_restantes_hw = mensaje
-                    self.contadores["fichas_restantes"] = fichas_restantes_hw
-                    print(f"[GUI] ← FICHAS AGREGADAS | Restantes: {fichas_restantes_hw}")
-                    self.actualizar_contadores_gui()
-
-        except queue.Empty:
-            # No hay más mensajes en la cola
-            pass
-
-        if procesados > 0:
-            print(f"[COLA GUI] Procesados {procesados} mensajes")
-
-        # Programar siguiente procesamiento en 50ms
-        self.root.after(50, self.procesar_cola_actualizaciones)
+        # Repetir cada 100ms (10 veces por segundo)
+        self.root.after(100, self.sincronizar_contadores_con_core)
 
     def cargar_configuracion(self):
         if os.path.exists(self.config_file):
