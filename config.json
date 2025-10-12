@@ -16,24 +16,24 @@
     "valor_ficha": 600.0,
     "contadores": {
         "fichas_expendidas": 0,
-        "dinero_ingresado": 0,
-        "promo1_contador": 0,
+        "dinero_ingresado": 2000.0,
+        "promo1_contador": 1,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0
     },
     "contadores_apertura": {
         "fichas_expendidas": 0,
-        "dinero_ingresado": 0,
-        "promo1_contador": 0,
+        "dinero_ingresado": 2000.0,
+        "promo1_contador": 1,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0
     },
     "contadores_parciales": {
         "fichas_expendidas": 0,
-        "dinero_ingresado": 0,
-        "promo1_contador": 0,
+        "dinero_ingresado": 2000.0,
+        "promo1_contador": 1,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0
