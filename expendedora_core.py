@@ -6,6 +6,7 @@ import threading
 import json
 import os
 from datetime import datetime
+import shared_buffer
 
 config_file = "config.json"
 registro_file = "registro.json"
@@ -22,19 +23,11 @@ PULSO_MAX = 0.5   # Duración máxima del pulso (500ms) - filtro de bloqueos
 DB_FILE = "expendedora.db"
 
 # --- CONFIGURACIÓN DE SERVIDORES ---
-SERVER_HEARTBEAT = "http://192.168.1.33/esp32_project/insert_heartbeat.php"
-SERVER_CIERRE = "http://192.168.1.33/esp32_project/insert_close_expendedora.php"
+SERVER_HEARTBEAT = "http://127.0.0.1/esp32_project/insert_heartbeat.php"
+SERVER_CIERRE = "http://127.0.0.1/esp32_project/insert_close_expendedora.php"
 
 # --- VARIABLES DEL SISTEMA ---
-cuenta = 0
-fichas_restantes = 0  # Contador de fichas pendientes por expender
-fichas_expendidas = 0  # Contador de fichas ya expendidas
-r_cuenta = 0
-r_sal = 0
-promo1_count = 0
-promo2_count = 0
-promo3_count = 0
-motor_activo = False
+# Variables globales removidas, ahora se usan shared_buffer
 
 # --- LOCK PARA THREADING ---
 fichas_lock = threading.Lock()
@@ -50,13 +43,11 @@ def registrar_gui_actualizar(funcion):
 
 def get_fichas_restantes():
     """Obtener fichas_restantes de forma thread-safe"""
-    with fichas_lock:
-        return fichas_restantes
+    return shared_buffer.get_fichas_restantes()
 
 def get_fichas_expendidas():
     """Obtener fichas_expendidas de forma thread-safe"""
-    with fichas_lock:
-        return fichas_expendidas
+    return shared_buffer.get_fichas_expendidas()
 
 # ----------CONEXION CON GUI Y LOGICA PARA GUARDAR REGISTROS---------------
 def cargar_configuracion():
@@ -158,24 +149,26 @@ def enviar_pulso():
     threading.Timer(60, enviar_pulso).start()  
 
 def enviar_cierre_diario():
-    global r_cuenta, r_sal, promo1_count, promo2_count, promo3_count
-
     data = {
         "device_id": "EXPENDEDORA_1",
-        "dato1": promo3_count,
-        "dato2": r_cuenta,
-        "dato3": promo1_count,
-        "dato4": promo2_count,
-        "dato5": r_sal
+        "dato1": shared_buffer.get_promo_count(3),
+        "dato2": shared_buffer.get_r_cuenta(),
+        "dato3": shared_buffer.get_promo_count(1),
+        "dato4": shared_buffer.get_promo_count(2),
+        "dato5": shared_buffer.get_r_sal()
     }
-    
+
     try:
         response = requests.post(SERVER_CIERRE, json=data)
         print("Cierre enviado:", response.text)
     except requests.RequestException as e:
         print("Error enviando cierre:", e)
 
-    r_cuenta = r_sal = promo1_count = promo2_count = promo3_count = 0  
+    shared_buffer.set_r_cuenta(0)
+    shared_buffer.set_r_sal(0)
+    shared_buffer.set_promo_count(1, 0)
+    shared_buffer.set_promo_count(2, 0)
+    shared_buffer.set_promo_count(3, 0)
 
 # --- CONTROL DEL MOTOR Y CONTEO DE FICHAS ---
 import time
@@ -189,8 +182,6 @@ def controlar_motor():
     - Implementa detección de pulso completo (HIGH->LOW->HIGH)
     - La GUI lee directamente las variables globales (thread-safe via funciones get)
     """
-    global motor_activo, fichas_restantes, fichas_expendidas
-
     estado_anterior_sensor = GPIO.input(ENTHOPER)
     ficha_en_sensor = False  # Flag para detectar pulso completo
     tiempo_inicio_pulso = 0
@@ -198,20 +189,20 @@ def controlar_motor():
     print("[CORE] Iniciando hilo de control de motor")
 
     while True:
+        # Procesar comandos desde la GUI
+        shared_buffer.process_gui_commands()
+
         # Control del motor basado en fichas_restantes
-        with fichas_lock:
-            if fichas_restantes > 0:
-                # Hay fichas pendientes - Motor debe estar encendido
-                if not motor_activo:
-                    GPIO.output(MOTOR_PIN, GPIO.HIGH)
-                    motor_activo = True
-                    print(f"[MOTOR ON] Fichas pendientes: {fichas_restantes}")
-            else:
-                # No hay fichas pendientes - Motor debe estar apagado
-                if motor_activo:
-                    GPIO.output(MOTOR_PIN, GPIO.LOW)
-                    motor_activo = False
-                    print("[MOTOR OFF] Todas las fichas expendidas")
+        if shared_buffer.get_fichas_restantes() > 0:
+            if not shared_buffer.get_motor_activo():
+                GPIO.output(MOTOR_PIN, GPIO.HIGH)
+                shared_buffer.set_motor_activo(True)
+                print(f"[MOTOR ON] Fichas pendientes: {shared_buffer.get_fichas_restantes()}")
+        else:
+            if shared_buffer.get_motor_activo():
+                GPIO.output(MOTOR_PIN, GPIO.LOW)
+                shared_buffer.set_motor_activo(False)
+                print("[MOTOR OFF] Todas las fichas expendidas")
 
         # Leer estado actual del sensor
         estado_actual_sensor = GPIO.input(ENTHOPER)
@@ -233,19 +224,16 @@ def controlar_motor():
 
                 # Verificar que el pulso duró un tiempo razonable
                 if PULSO_MIN <= duracion_pulso <= PULSO_MAX:
-                    # Contar la ficha
                     cambio_realizado = False
-                    with fichas_lock:
-                        if fichas_restantes > 0:
-                            fichas_restantes -= 1
-                            fichas_expendidas += 1
-                            cambio_realizado = True
-                            print(f"[FICHA EXPENDIDA] Restantes: {fichas_restantes} | Total: {fichas_expendidas} | Duración: {duracion_pulso*1000:.1f}ms")
+                    if shared_buffer.get_fichas_restantes() > 0:
+                        shared_buffer.decrementar_fichas_restantes()
+                        cambio_realizado = True
+                        print(f"[FICHA EXPENDIDA] Restantes: {shared_buffer.get_fichas_restantes()} | Total: {shared_buffer.get_fichas_expendidas()} | Duración: {duracion_pulso*1000:.1f}ms")
 
-                            # Actualizar registro
-                            actualizar_registro("ficha", 1)
-                        else:
-                            print("[ADVERTENCIA] Sensor detectó ficha pero contador ya está en 0")
+                        # Actualizar registro
+                        actualizar_registro("ficha", 1)
+                    else:
+                        print("[ADVERTENCIA] Sensor detectó ficha pero contador ya está en 0")
 
                     # NOTIFICAR A LA GUI (fuera del lock para evitar deadlock)
                     if cambio_realizado and gui_actualizar_funcion:
@@ -295,8 +283,7 @@ def obtener_fichas_expendidas():
     """
     Retorna la cantidad de fichas ya expendidas
     """
-    with fichas_lock:
-        return fichas_expendidas
+    return shared_buffer.get_fichas_expendidas()
 
 # --- CONVERSIÓN DE DINERO A FICHAS ---
 def convertir_fichas():

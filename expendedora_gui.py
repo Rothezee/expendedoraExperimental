@@ -6,10 +6,11 @@ from datetime import datetime
 import requests
 from User_management import UserManagement
 import expendedora_core as core
+import shared_buffer
 
-url = "http://192.168.1.33/esp32_project/expendedora/insert_close_expendedora.php"  # URL DE CIERRES y subcierres
-urlDatos = "http://192.168.1.33/esp32_project/expendedora/insert_data_expendedora.php"  # URL DE REPORTES
-urlSubcierre = "http://192.168.1.33/esp32_project/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES
+url = "http://127.0.0.1/esp32_project/expendedora/insert_close_expendedora.php"  # URL DE CIERRES y subcierres
+urlDatos = "http://127.0.0.1/esp32_project/expendedora/insert_data_expendedora.php"  # URL DE REPORTES
+urlSubcierre = "http://127.0.0.1/esp32_project/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES
 
 
 class ExpendedoraGUI:
@@ -186,8 +187,8 @@ class ExpendedoraGUI:
         """
         def _actualizar():
             # Leer valores actuales del core (thread-safe)
-            fichas_restantes_hw = core.get_fichas_restantes()
-            fichas_expendidas_hw = core.get_fichas_expendidas()
+            fichas_restantes_hw = shared_buffer.get_fichas_restantes()
+            fichas_expendidas_hw = shared_buffer.get_fichas_expendidas()
 
             # Detectar cambios en fichas expendidas
             diferencia = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
@@ -310,14 +311,11 @@ class ExpendedoraGUI:
                     messagebox.showerror("Error", "La cantidad debe ser mayor a 0.")
                     return
 
-                # Agregar fichas al core (esto activará el motor automáticamente)
-                total_fichas = core.agregar_fichas(cantidad_fichas)
-                print(f"[GUI] Fichas agregadas al core: {cantidad_fichas}, Total pendientes: {total_fichas}")
+                # Enviar comando al core via buffer compartido
+                shared_buffer.gui_to_core_queue.put({'type': 'add_fichas', 'cantidad': cantidad_fichas})
+                print(f"[GUI] Comando add_fichas enviado: {cantidad_fichas}")
 
-                # Sincronizar inmediatamente con el hardware (solo el estado instantáneo)
-                self.contadores["fichas_restantes"] = total_fichas
-
-                # Actualizar contadores de dinero
+                # Actualizar solo el dinero ingresado, NO fichas_restantes aquí
                 dinero = cantidad_fichas * self.valor_ficha
                 self.contadores["dinero_ingresado"] += dinero
                 self.contadores_apertura["dinero_ingresado"] += dinero
@@ -329,7 +327,7 @@ class ExpendedoraGUI:
             except ValueError:
                 messagebox.showerror("Error", "Ingrese un valor numérico válido.")
 
-        tk.Button(fichas_window, text="Confirmar", command=confirmar_fichas, bg="#007BFF", fg="white", font=("Arial", 12), bd=0).pack(pady=5)
+        tk.Button(fichas_window, text="Confirmar", command=confirmar_fichas, bg="#007BFF", fg="white", font=("Arial", 12), width=20, bd=0).pack(pady=5)
         tk.Button(fichas_window, text="Cancelar", command=fichas_window.destroy, bg="#D32F2F", fg="white", font=("Arial", 12), bd=0).pack(pady=5)
 
     def realizar_apertura(self):
@@ -420,36 +418,37 @@ class ExpendedoraGUI:
         }
         self.guardar_configuracion()
 
-    # def realizar_cierre_parcial(self):
-    #     # Realiza el cierre parcial
-    #     subcierre_info = {
-    #        "device_id": "EXPENDEDORA_1",
-    #         "partial_fichas": self.contadores_parciales['fichas_expendidas'],
-    #         "partial_dinero": self.contadores_parciales['dinero_ingresado'],
-    #         "partial_p1": self.contadores_parciales['promo1_contador'],
-    #         "partial_p2": self.contadores_parciales['promo2_contador'],
-    #         "partial_p3": self.contadores_parciales['promo3_contador'],
-    #         "employee_id": self.username  # Reemplazar con el ID del empleado actual
-    #     }
-        
-    #     mensaje_subcierre = (
-    #         f"Fichas expendidas: {subcierre_info['partial_fichas']}\n"
-    #         f"Dinero ingresado: ${subcierre_info['partial_dinero']:.2f}\n"
-    #         f"Promo 1 usadas: {subcierre_info['partial_p1']}\n"
-    #         f"Promo 2 usadas: {subcierre_info['partial_p2']}\n"
-    #         f"Promo 3 usadas: {subcierre_info['partial_p3']}"
-    #     )
-    #     messagebox.showinfo("Cierre Parcial", f"Cierre parcial realizado:\n{mensaje_subcierre}")
-
-        self.contadores = {
-            "fichas_expendidas": 0, 
-            "dinero_ingresado": 0,
-            "promo1_contador": 0,
-            "promo2_contador": 0,   
-            "promo3_contador": 0,
-            "fichas_restantes": 0
+    def realizar_cierre_parcial(self):
+        # Realiza el cierre parcial
+        subcierre_info = {
+            "device_id": "EXPENDEDORA_1",
+            "partial_fichas": self.contadores_parciales['fichas_expendidas'],
+            "partial_dinero": self.contadores_parciales['dinero_ingresado'],
+            "partial_p1": self.contadores_parciales['promo1_contador'],
+            "partial_p2": self.contadores_parciales['promo2_contador'],
+            "partial_p3": self.contadores_parciales['promo3_contador'],
+            "employee_id": self.username
         }
-        
+
+        mensaje_subcierre = (
+            f"Fichas expendidas: {subcierre_info['partial_fichas']}\n"
+            f"Dinero ingresado: ${subcierre_info['partial_dinero']:.2f}\n"
+            f"Promo 1 usadas: {subcierre_info['partial_p1']}\n"
+            f"Promo 2 usadas: {subcierre_info['partial_p2']}\n"
+            f"Promo 3 usadas: {subcierre_info['partial_p3']}"
+        )
+        messagebox.showinfo("Cierre Parcial", f"Cierre parcial realizado:\n{mensaje_subcierre}")
+
+        # Enviar datos al servidor
+        try:
+            response = requests.post(urlSubcierre, json=subcierre_info)
+            if response.status_code == 200:
+                print("Datos de cierre parcial enviados con éxito")
+            else:
+                print(f"Error al enviar datos de cierre parcial: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error al conectar con el servidor: {e}")
+
         # Reiniciar los contadores parciales
         self.contadores_parciales = {
             "fichas_expendidas": 0,
@@ -554,13 +553,11 @@ class ExpendedoraGUI:
         messagebox.showinfo("Simulación", "Sensor del hopper activado - Ficha expendida")
             
     def simular_promo(self, promo):
-        # Agregar fichas al core (activa el motor automáticamente)
+        # Enviar comando al core via buffer compartido
         fichas = self.promociones[promo]["fichas"]
-        total_fichas = core.agregar_fichas(fichas)
-        print(f"[GUI] Promo {promo}: {fichas} fichas agregadas, Total pendientes: {total_fichas}")
-
-        # Sincronizar inmediatamente con el hardware (solo el estado instantáneo)
-        self.contadores["fichas_restantes"] = total_fichas
+        promo_num = int(promo.split()[1])
+        shared_buffer.gui_to_core_queue.put({'type': 'promo', 'promo_num': promo_num, 'fichas': fichas})
+        print(f"[GUI] Comando promo enviado: {promo}, fichas: {fichas}")
 
         # Aumentar el dinero ingresado según el precio de la promoción
         precio = self.promociones[promo]["precio"]
@@ -593,7 +590,7 @@ class ExpendedoraGUI:
         now = datetime.now()
         current_time = now.strftime("%Y-%m-%d %H:%M:%S")
         self.footer_label.config(text=current_time)  # Actualizar el label del footer
-        self.footer_label.after(1000, self.actualizar_fecha_hora)  # Llamar a esta función cada segundo
+        self._after_id = self.root.after(1000, self.actualizar_fecha_hora)  # Llamar a esta función cada segundo
 
     # NOTA: Esta función ya no es necesaria - ahora usamos callbacks en tiempo real
     # def actualizar_desde_hardware(self):
