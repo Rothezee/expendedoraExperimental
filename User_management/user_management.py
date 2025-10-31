@@ -8,8 +8,8 @@ class UserManagement:
         self.main_callback = main_callback  # Guardar el callback
         create_table()  # Crear la tabla de usuarios si no existe
         self.root = tk.Tk()
-        self.root.title("Sistema de Control de Usuarios")
-        self.root.geometry("400x300")
+        self.root.title("Sistema de Control de Usuarios") # El título no será visible
+        self.root.attributes('-fullscreen', True) # Ocupa 100% de pantalla y oculta la barra de título
         self.root.configure(bg="#e9ecef")
 
         self.main_frame = tk.Frame(self.root, bg="#e9ecef")
