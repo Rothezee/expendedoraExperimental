@@ -17,8 +17,8 @@ class ExpendedoraGUI:
     def __init__(self, root, username):
         self.root = root
         self.username = username
-        self.root.title("Expendedora - Control")
-        self.root.geometry("800x500")
+        self.root.title("Expendedora - Control") # El título no será visible
+        self.root.attributes('-fullscreen', True) # Ocupa 100% de pantalla y oculta la barra de título
         self.root.configure(bg="#f0f0f0")
 
         # Inicializar variables de configuración
@@ -154,25 +154,23 @@ class ExpendedoraGUI:
 
         self.actualizar_fecha_hora()
 
-        print("[GUI] Sincronización con core configurada (actualización por eventos)")
-
         self.mostrar_frame(self.main_frame)
 
-    def enviar_datos_al_servidor(self):
-        datos = {
-            "device_id": "EXPENDEDORA_1",
-            "dato1": self.contadores['fichas_expendidas'],
-            "dato2": self.contadores['dinero_ingresado'],
-        }
+    #def enviar_datos_al_servidor(self):
+    #    datos = {
+    #        "device_id": "EXPENDEDORA_1",
+    #        "dato1": self.contadores['fichas_expendidas'],
+    #        "dato2": self.contadores['dinero_ingresado'],
+    #    }
 
-        try:
-            response = requests.post(urlDatos, json=datos)
-            if response.status_code == 200:
-                print("Datos enviados con éxito")
-            else:
-                print(f"Error al enviar datos: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error al conectar con el servidor: {e}")
+    #    try:
+    #        response = requests.post(urlDatos, json=datos)
+    #        if response.status_code == 200:
+    #            print("Datos enviados con éxito")
+    #        else:
+    #            print(f"Error al enviar datos: {response.status_code}")
+    #    except requests.exceptions.RequestException as e:
+    #        print(f"Error al conectar con el servidor: {e}")
 
     def mostrar_frame(self, frame):
         for f in [self.main_frame, self.config_frame, self.reportes_frame, self.simulacion_frame]:
@@ -200,13 +198,13 @@ class ExpendedoraGUI:
                 self.contadores_apertura["fichas_expendidas"] += diferencia
                 self.contadores_parciales["fichas_expendidas"] += diferencia
 
-                print(f"[GUI] ✓ SINCRONIZADO | Restantes: {fichas_restantes_hw} | Total: {fichas_expendidas_hw} | +{diferencia}")
+                # print(f"[GUI] ✓ SINCRONIZADO | Restantes: {fichas_restantes_hw} | Total: {fichas_expendidas_hw} | +{diferencia}")
                 self.actualizar_contadores_gui()
 
             elif fichas_restantes_hw != self.contadores["fichas_restantes"]:
                 # Solo cambió fichas_restantes (se agregaron fichas)
                 self.contadores["fichas_restantes"] = fichas_restantes_hw
-                print(f"[GUI] ✓ FICHAS AGREGADAS | Restantes: {fichas_restantes_hw}")
+                # print(f"[GUI] ✓ FICHAS AGREGADAS | Restantes: {fichas_restantes_hw}")
                 self.actualizar_contadores_gui()
 
         # Programar actualización en el hilo de Tkinter
@@ -226,10 +224,19 @@ class ExpendedoraGUI:
                 self.contadores_apertura = config.get("contadores_apertura", self.contadores_apertura)
                 self.contadores_parciales = config.get("contadores_parciales", self.contadores_parciales)
 
-                # Sincronización: resetear los contadores de fichas al iniciar
-                self.contadores["fichas_restantes"] = 0
-                self.contadores["fichas_expendidas"] = 0
-                print("[GUI] Configuración cargada. Contadores de fichas sincronizados con el hardware.")
+                # **SOLUCIÓN**: Al iniciar la GUI, solo reiniciar los contadores de la sesión actual.
+                # Los contadores de apertura y parciales deben persistir hasta que se realice un cierre.
+                self.contadores = {
+                    "fichas_expendidas": 0,
+                    "dinero_ingresado": 0,
+                    "promo1_contador": 0,
+                    "promo2_contador": 0,
+                    "promo3_contador": 0,
+                    "fichas_restantes": 0 # Siempre inicia en 0 para sincronizar con el hardware
+                }
+
+                # Guardar inmediatamente la configuración reseteada
+                self.guardar_configuracion()
         else:
             self.guardar_configuracion()
 
@@ -313,13 +320,16 @@ class ExpendedoraGUI:
 
                 # Enviar comando al core via buffer compartido
                 shared_buffer.gui_to_core_queue.put({'type': 'add_fichas', 'cantidad': cantidad_fichas})
-                print(f"[GUI] Comando add_fichas enviado: {cantidad_fichas}")
+                # print(f"[GUI] Comando add_fichas enviado: {cantidad_fichas}")
 
                 # Actualizar solo el dinero ingresado, NO fichas_restantes aquí
                 dinero = cantidad_fichas * self.valor_ficha
                 self.contadores["dinero_ingresado"] += dinero
                 self.contadores_apertura["dinero_ingresado"] += dinero
                 self.contadores_parciales["dinero_ingresado"] += dinero
+
+                # **SOLUCIÓN**: Actualizar el buffer compartido para que el core lo vea
+                shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"])
 
                 self.guardar_configuracion()
                 self.actualizar_contadores_gui()
@@ -491,14 +501,6 @@ class ExpendedoraGUI:
             "promo3_contador": 0,
             "fichas_restantes": 0
         }
-        self.contadores_apertura = {
-            "fichas_expendidas": 0,
-            "dinero_ingresado": 0,
-            "promo1_contador": 0,
-            "promo2_contador": 0,
-            "promo3_contador": 0,
-            "fichas_restantes": 0
-        }
         self.contadores_parciales = {
             "fichas_expendidas": 0,
             "dinero_ingresado": 0,
@@ -507,6 +509,9 @@ class ExpendedoraGUI:
             "promo3_contador": 0,
             "fichas_restantes": 0
         }
+        
+        # **SOLUCIÓN**: Actualizar la GUI con los contadores en cero ANTES de guardar
+        self.actualizar_contadores_gui()
         self.guardar_configuracion()
 
         messagebox.showinfo("Cerrar Sesión", "La sesión ha sido cerrada.")
@@ -550,14 +555,14 @@ class ExpendedoraGUI:
 
         # Simular flanco descendente en el sensor ENTHOPER
         GPIO.simulate_sensor_pulse(core.ENTHOPER)
-        messagebox.showinfo("Simulación", "Sensor del hopper activado - Ficha expendida")
+        # messagebox.showinfo("Simulación", "Sensor del hopper activado - Ficha expendida")
             
     def simular_promo(self, promo):
         # Enviar comando al core via buffer compartido
         fichas = self.promociones[promo]["fichas"]
         promo_num = int(promo.split()[1])
         shared_buffer.gui_to_core_queue.put({'type': 'promo', 'promo_num': promo_num, 'fichas': fichas})
-        print(f"[GUI] Comando promo enviado: {promo}, fichas: {fichas}")
+        # print(f"[GUI] Comando promo enviado: {promo}, fichas: {fichas}")
 
         # Aumentar el dinero ingresado según el precio de la promoción
         precio = self.promociones[promo]["precio"]
@@ -565,6 +570,9 @@ class ExpendedoraGUI:
         self.contadores_apertura["dinero_ingresado"] += precio
         self.contadores_parciales["dinero_ingresado"] += precio
         self.contadores_labels["dinero_ingresado"].config(text=f"Dinero ingresado: ${self.contadores['dinero_ingresado']:.2f}")
+
+        # **SOLUCIÓN**: Actualizar el buffer compartido para que el core lo vea
+        shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"])
 
         # Diccionario para simular el switch
         promo_contadores = {
