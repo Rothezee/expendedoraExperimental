@@ -39,7 +39,7 @@ def registrar_gui_actualizar(funcion):
     """Registra la función de actualización de la GUI"""
     global gui_actualizar_funcion
     gui_actualizar_funcion = funcion
-    print("[CORE] Función de actualización GUI registrada")
+    # print("[CORE] Función de actualización GUI registrada")
 
 def get_fichas_restantes():
     """Obtener fichas_restantes de forma thread-safe"""
@@ -137,12 +137,30 @@ def set_config(clave, valor):
     conn.commit()
     conn.close()
 
+def enviar_datos_venta_servidor():
+    """Envía los datos de la última venta al servidor."""
+    # NOTA: Esta función se llama cuando el motor se detiene.
+    # Aquí se deben obtener los datos relevantes de la venta que acaba de terminar.
+    # Por ahora, enviamos los contadores totales como ejemplo.
+    # En el futuro, se podría implementar un sistema para rastrear ventas individuales.
+    datos = {
+        "device_id": "EXPENDEDORA_1",
+        "dato1": int(shared_buffer.get_fichas_expendidas()), # Asegurar que es entero
+        "dato2": int(shared_buffer.get_r_cuenta()) # Asegurar que es float
+    }
+    try:
+        # Usamos la URL de datos generales para reportar la venta
+        response = requests.post("http://127.0.0.1/esp32_project/expendedora/insert_data_expendedora.php", json=datos)
+        # print(f"[REPORTE VENTA] Datos de venta enviados. Respuesta: {response.status_code}")
+    except requests.RequestException as e:
+        print(f"[ERROR REPORTE VENTA] No se pudo enviar el reporte de venta: {e}")
+
 # --- ENVÍO DE DATOS AL SERVIDOR ---
 def enviar_pulso():
     data = {"device_id": "EXPENDEDORA_1"}
     try:
         response = requests.post(SERVER_HEARTBEAT, json=data)
-        print("Heartbeat enviado:", response.text)
+        # print("Heartbeat enviado:", response.text)
     except requests.RequestException as e:
         print("Error enviando heartbeat:", e)
 
@@ -160,7 +178,7 @@ def enviar_cierre_diario():
 
     try:
         response = requests.post(SERVER_CIERRE, json=data)
-        print("Cierre enviado:", response.text)
+        # print("Cierre enviado:", response.text)
     except requests.RequestException as e:
         print("Error enviando cierre:", e)
 
@@ -186,7 +204,7 @@ def controlar_motor():
     ficha_en_sensor = False  # Flag para detectar pulso completo
     tiempo_inicio_pulso = 0
 
-    print("[CORE] Iniciando hilo de control de motor")
+    # print("[CORE] Iniciando hilo de control de motor")
 
     while True:
         # Procesar comandos desde la GUI
@@ -197,12 +215,14 @@ def controlar_motor():
             if not shared_buffer.get_motor_activo():
                 GPIO.output(MOTOR_PIN, GPIO.HIGH)
                 shared_buffer.set_motor_activo(True)
-                print(f"[MOTOR ON] Fichas pendientes: {shared_buffer.get_fichas_restantes()}")
+                # print(f"[MOTOR ON] Fichas pendientes: {shared_buffer.get_fichas_restantes()}")
         else:
             if shared_buffer.get_motor_activo():
                 GPIO.output(MOTOR_PIN, GPIO.LOW)
                 shared_buffer.set_motor_activo(False)
-                print("[MOTOR OFF] Todas las fichas expendidas")
+                # print("[MOTOR OFF] Todas las fichas expendidas")
+                # Enviar reporte de la venta que acaba de terminar
+                enviar_datos_venta_servidor()
 
         # Leer estado actual del sensor
         estado_actual_sensor = GPIO.input(ENTHOPER)
@@ -215,7 +235,7 @@ def controlar_motor():
                 # Flanco descendente detectado - Ficha entrando
                 ficha_en_sensor = True
                 tiempo_inicio_pulso = tiempo_actual
-                print(f"[SENSOR] Ficha detectada entrando...")
+                # print(f"[SENSOR] Ficha detectada entrando...")
         else:
             # Estado: Ficha en el sensor (esperando que salga)
             if estado_actual_sensor == GPIO.HIGH:
@@ -228,7 +248,7 @@ def controlar_motor():
                     if shared_buffer.get_fichas_restantes() > 0:
                         shared_buffer.decrementar_fichas_restantes()
                         cambio_realizado = True
-                        print(f"[FICHA EXPENDIDA] Restantes: {shared_buffer.get_fichas_restantes()} | Total: {shared_buffer.get_fichas_expendidas()} | Duración: {duracion_pulso*1000:.1f}ms")
+                        # print(f"[FICHA EXPENDIDA] Restantes: {shared_buffer.get_fichas_restantes()} | Total: {shared_buffer.get_fichas_expendidas()} | Duración: {duracion_pulso*1000:.1f}ms")
 
                         # Actualizar registro
                         actualizar_registro("ficha", 1)
@@ -261,7 +281,7 @@ def agregar_fichas(cantidad):
 
     with fichas_lock:
         fichas_restantes += cantidad
-        print(f"[FICHAS AGREGADAS] +{cantidad} | Total pendientes: {fichas_restantes}")
+        # print(f"[FICHAS AGREGADAS] +{cantidad} | Total pendientes: {fichas_restantes}")
 
     # NOTIFICAR A LA GUI (fuera del lock)
     if gui_actualizar_funcion:
@@ -331,7 +351,7 @@ def iniciar_sistema():
     # Iniciar hilo de control del motor
     motor_thread = threading.Thread(target=controlar_motor, daemon=True)
     motor_thread.start()
-    print("Sistema de control de motor iniciado")
+    # print("Sistema de control de motor iniciado")
 
     return motor_thread
 
@@ -339,4 +359,4 @@ def detener_sistema():
     """Apaga el motor y limpia GPIO"""
     GPIO.output(MOTOR_PIN, GPIO.LOW)
     GPIO.cleanup()
-    print("Sistema detenido")
+    # print("Sistema detenido")
