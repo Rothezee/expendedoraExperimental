@@ -112,7 +112,7 @@ def set_promo_count(promo_num, value):
 # Función para procesar comandos desde la cola (llamada por el core)
 def process_gui_commands():
     while not gui_to_core_queue.empty():
-        command = gui_to_core_queue.get()
+        command = gui_to_core_queue.get() 
         # Procesar comando
         if command['type'] == 'add_fichas':
             agregar_fichas(command['cantidad'])
