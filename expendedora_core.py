@@ -23,8 +23,7 @@ PULSO_MAX = 0.5   # Duración máxima del pulso (500ms) - filtro de bloqueos
 DB_FILE = "expendedora.db"
 
 # --- CONFIGURACIÓN DE SERVIDORES ---
-SERVER_HEARTBEAT = "http://127.0.0.1/esp32_project/insert_heartbeat.php"
-SERVER_CIERRE = "http://127.0.0.1/esp32_project/insert_close_expendedora.php"
+SERVER_HEARTBEAT = "https://maquinasbonus.com/esp32_project/insert_heartbeat.php"
 
 # --- VARIABLES DEL SISTEMA ---
 # Variables globales removidas, ahora se usan shared_buffer
@@ -143,6 +142,11 @@ def enviar_datos_venta_servidor():
     # Aquí se deben obtener los datos relevantes de la venta que acaba de terminar.
     # Por ahora, enviamos los contadores totales como ejemplo.
     # En el futuro, se podría implementar un sistema para rastrear ventas individuales.
+
+    DNS = "https://maquinasbonus.com/"  # DNS servidor
+    DNSLocal = "http://127.0.0.1/"  # DNS servidor local
+    url = "esp32_project/expendedora/insert_data_expendedora.php"  # URL de datos generales
+
     datos = {
         "device_id": "EXPENDEDORA_1",
         "dato1": int(shared_buffer.get_fichas_expendidas()), # Asegurar que es entero
@@ -150,8 +154,14 @@ def enviar_datos_venta_servidor():
     }
     try:
         # Usamos la URL de datos generales para reportar la venta
-        response = requests.post("http://127.0.0.1/esp32_project/expendedora/insert_data_expendedora.php", json=datos)
+        response = requests.post(DNSLocal + url, json=datos)
         # print(f"[REPORTE VENTA] Datos de venta enviados. Respuesta: {response.status_code}")
+    except requests.RequestException as e:
+        print(f"[ERROR REPORTE VENTA] No se pudo enviar el reporte de venta: {e}")
+
+    try:
+        # Usamos la URL de datos generales para reportar la venta
+        response = requests.post(DNS + url, json=datos)
     except requests.RequestException as e:
         print(f"[ERROR REPORTE VENTA] No se pudo enviar el reporte de venta: {e}")
 
@@ -165,28 +175,6 @@ def enviar_pulso():
         print("Error enviando heartbeat:", e)
 
     threading.Timer(60, enviar_pulso).start()  
-
-def enviar_cierre_diario():
-    data = {
-        "device_id": "EXPENDEDORA_1",
-        "dato1": shared_buffer.get_promo_count(3),
-        "dato2": shared_buffer.get_r_cuenta(),
-        "dato3": shared_buffer.get_promo_count(1),
-        "dato4": shared_buffer.get_promo_count(2),
-        "dato5": shared_buffer.get_r_sal()
-    }
-
-    try:
-        response = requests.post(SERVER_CIERRE, json=data)
-        # print("Cierre enviado:", response.text)
-    except requests.RequestException as e:
-        print("Error enviando cierre:", e)
-
-    shared_buffer.set_r_cuenta(0)
-    shared_buffer.set_r_sal(0)
-    shared_buffer.set_promo_count(1, 0)
-    shared_buffer.set_promo_count(2, 0)
-    shared_buffer.set_promo_count(3, 0)
 
 # --- CONTROL DEL MOTOR Y CONTEO DE FICHAS ---
 import time
@@ -248,7 +236,6 @@ def controlar_motor():
                     if shared_buffer.get_fichas_restantes() > 0:
                         shared_buffer.decrementar_fichas_restantes()
                         cambio_realizado = True
-                        # print(f"[FICHA EXPENDIDA] Restantes: {shared_buffer.get_fichas_restantes()} | Total: {shared_buffer.get_fichas_expendidas()} | Duración: {duracion_pulso*1000:.1f}ms")
 
                         # Actualizar registro
                         actualizar_registro("ficha", 1)
@@ -281,7 +268,6 @@ def agregar_fichas(cantidad):
 
     with fichas_lock:
         fichas_restantes += cantidad
-        # print(f"[FICHAS AGREGADAS] +{cantidad} | Total pendientes: {fichas_restantes}")
 
     # NOTIFICAR A LA GUI (fuera del lock)
     if gui_actualizar_funcion:

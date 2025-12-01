@@ -8,10 +8,11 @@ from User_management import UserManagement
 import expendedora_core as core
 import shared_buffer
 
-url = "http://127.0.0.1/esp32_project/expendedora/insert_close_expendedora.php"  # URL DE CIERRES y subcierres
-urlDatos = "http://127.0.0.1/esp32_project/expendedora/insert_data_expendedora.php"  # URL DE REPORTES
-urlSubcierre = "http://127.0.0.1/esp32_project/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES
-
+urlCierres = "esp32_project/expendedora/insert_close_expendedora.php"  # URL DE CIERRES
+urlDatos = "esp32_project/expendedora/insert_data_expendedora.php"  # URL DE REPORTES
+urlSubcierre = "esp32_project/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES
+DNS = "https://maquinasbonus.com/"  # DNS servidor
+DNSLocal = "http://127.0.0.1/"  # DNS servidor local
 
 class ExpendedoraGUI:
     def __init__(self, root, username):
@@ -393,13 +394,22 @@ class ExpendedoraGUI:
         
         # Enviar datos al servidor
         try:
-            response = requests.post(url, json=info)
+            response = requests.post(DNS + urlCierres, json=info)
             if response.status_code == 200:
                 print("Datos de cierre enviados con éxito")
             else:
                 print(f"Error al enviar datos de cierre: {response.status_code}")
         except requests.exceptions.RequestException as e:
             print(f"Error al conectar con el servidor: {e}")
+
+        try:
+            response = requests.post(DNSLocal + urlCierres, json=info)
+            if response.status_code == 200:
+                print("Datos de cierre enviados con éxito")
+            else:
+                print(f"Error al enviar datos de cierre: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error al conectar con el servidor: {e}")    
         
         self.contadores = {
             "fichas_expendidas": 0, 
@@ -451,7 +461,16 @@ class ExpendedoraGUI:
 
         # Enviar datos al servidor
         try:
-            response = requests.post(urlSubcierre, json=subcierre_info)
+            response = requests.post(DNS + urlSubcierre, json=subcierre_info)
+            if response.status_code == 200:
+                print("Datos de cierre parcial enviados con éxito")
+            else:
+                print(f"Error al enviar datos de cierre parcial: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error al conectar con el servidor: {e}")
+
+        try:
+            response = requests.post(DNSLocal + urlSubcierre, json=subcierre_info)
             if response.status_code == 200:
                 print("Datos de cierre parcial enviados con éxito")
             else:
@@ -484,7 +503,16 @@ class ExpendedoraGUI:
 
         # Enviar datos al servidor
         try:
-            response = requests.post(urlSubcierre, json=Subcierre_info)
+            response = requests.post(DNS + urlSubcierre, json=Subcierre_info)
+            if response.status_code == 200:
+                print("Datos de cierre parcial enviados con éxito")
+            else:
+                print(f"Error al enviar datos de cierre parcial: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error al conectar con el servidor: {e}")
+
+        try:
+            response = requests.post(DNSLocal + urlSubcierre, json=Subcierre_info)
             if response.status_code == 200:
                 print("Datos de cierre parcial enviados con éxito")
             else:
