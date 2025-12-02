@@ -189,23 +189,20 @@ class ExpendedoraGUI:
             fichas_restantes_hw = shared_buffer.get_fichas_restantes()
             fichas_expendidas_hw = shared_buffer.get_fichas_expendidas()
 
-            # Detectar cambios en fichas expendidas
-            diferencia = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
-
-            if diferencia > 0:
-                # Se expendieron fichas
+            # 1. Sincronizar fichas expendidas si han aumentado
+            diferencia_expendidas = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
+            if diferencia_expendidas > 0:
                 self.contadores["fichas_expendidas"] = fichas_expendidas_hw
-                self.contadores["fichas_restantes"] = fichas_restantes_hw
-                self.contadores_apertura["fichas_expendidas"] += diferencia
-                self.contadores_parciales["fichas_expendidas"] += diferencia
-
-                # print(f"[GUI] ✓ SINCRONIZADO | Restantes: {fichas_restantes_hw} | Total: {fichas_expendidas_hw} | +{diferencia}")
+                self.contadores_apertura["fichas_expendidas"] += diferencia_expendidas
+                self.contadores_parciales["fichas_expendidas"] += diferencia_expendidas
+                # print(f"[GUI] ✓ FICHAS EXPENDIDAS | Total: {fichas_expendidas_hw} | +{diferencia_expendidas}")
                 self.actualizar_contadores_gui()
 
-            elif fichas_restantes_hw != self.contadores["fichas_restantes"]:
-                # Solo cambió fichas_restantes (se agregaron fichas)
+            # 2. Sincronizar fichas restantes si han cambiado (independientemente de las expendidas)
+            #    Esto cubre tanto la adición de fichas como el decremento al expender.
+            if fichas_restantes_hw != self.contadores["fichas_restantes"]:
                 self.contadores["fichas_restantes"] = fichas_restantes_hw
-                # print(f"[GUI] ✓ FICHAS AGREGADAS | Restantes: {fichas_restantes_hw}")
+                # print(f"[GUI] ✓ FICHAS RESTANTES | Nuevo valor: {fichas_restantes_hw}")
                 self.actualizar_contadores_gui()
 
         # Programar actualización en el hilo de Tkinter
