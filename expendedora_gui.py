@@ -316,9 +316,11 @@ class ExpendedoraGUI:
                     messagebox.showerror("Error", "La cantidad debe ser mayor a 0.")
                     return
 
-                # **SOLUCIÓN**: Actualizar el contador de la GUI instantáneamente.
-                # Esto muestra al usuario la cantidad solicitada de inmediato.
-                self.contadores["fichas_restantes"] += cantidad_fichas
+                # **SOLUCIÓN MEJORADA**:
+                # 1. Actualiza la GUI de forma optimista para una respuesta instantánea.
+                #    El valor real se sincronizará desde el core en milisegundos.
+                current_fichas = self.contadores["fichas_restantes"]
+                self.contadores_labels["fichas_restantes"].config(text=f"Fichas Restantes: {current_fichas + cantidad_fichas}")
 
                 # Enviar comando al core via buffer compartido
                 shared_buffer.gui_to_core_queue.put({'type': 'add_fichas', 'cantidad': cantidad_fichas})
@@ -334,7 +336,9 @@ class ExpendedoraGUI:
                 shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"])
 
                 self.guardar_configuracion()
-                self.actualizar_contadores_gui()
+                # Ya no llamamos a self.actualizar_contadores_gui() para todo,
+                # solo actualizamos el dinero y las fichas restantes visualmente.
+                self.contadores_labels["dinero_ingresado"].config(text=f"Dinero Ingresado: ${self.contadores['dinero_ingresado']:.2f}")
                 fichas_window.destroy()
             except ValueError:
                 messagebox.showerror("Error", "Ingrese un valor numérico válido.")
