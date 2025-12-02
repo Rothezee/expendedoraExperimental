@@ -316,6 +316,10 @@ class ExpendedoraGUI:
                     messagebox.showerror("Error", "La cantidad debe ser mayor a 0.")
                     return
 
+                # **SOLUCIÓN**: Actualizar el contador de la GUI instantáneamente.
+                # Esto muestra al usuario la cantidad solicitada de inmediato.
+                self.contadores["fichas_restantes"] += cantidad_fichas
+
                 # Enviar comando al core via buffer compartido
                 shared_buffer.gui_to_core_queue.put({'type': 'add_fichas', 'cantidad': cantidad_fichas})
                 # print(f"[GUI] Comando add_fichas enviado: {cantidad_fichas}")
@@ -560,6 +564,9 @@ class ExpendedoraGUI:
             else:
                 texto = f"{key.replace('_', ' ').title()}: {int(valor)}"
             self.contadores_labels[key].config(text=texto)
+        
+        # Forzar a Tkinter a procesar las actualizaciones de los widgets inmediatamente
+        self.root.update_idletasks()
 
     def expender_fichas_gui(self):
         """Ya no es necesaria - el hardware controla todo automáticamente"""
