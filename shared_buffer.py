@@ -23,6 +23,14 @@ shared_data = {
     'motor_activo': False
 }
 
+# Variable para almacenar la función de callback de actualización GUI
+gui_update_callback = None
+
+def set_gui_update_callback(callback):
+    """Registra la función de callback para notificar cambios a la GUI"""
+    global gui_update_callback
+    gui_update_callback = callback
+
 # Funciones thread-safe para acceder a datos compartidos
 def get_fichas_restantes():
     with shared_data_lock:
@@ -111,14 +119,31 @@ def set_promo_count(promo_num, value):
 
 # Función para procesar comandos desde la cola (llamada por el core)
 def process_gui_commands():
+    """Procesa comandos de la GUI y notifica cambios"""
+    comando_procesado = False
+    
     while not gui_to_core_queue.empty():
-        command = gui_to_core_queue.get() 
+        command = gui_to_core_queue.get()
+        comando_procesado = True
+        
         # Procesar comando
         if command['type'] == 'add_fichas':
-            agregar_fichas(command['cantidad'])
+            cantidad = command['cantidad']
+            agregar_fichas(cantidad)
+            print(f"[CORE] ✓ Fichas agregadas: {cantidad} | Total: {get_fichas_restantes()}")
+            
         elif command['type'] == 'promo':
             promo_num = command['promo_num']
             fichas = command['fichas']
             agregar_fichas(fichas)
             increment_promo_count(promo_num)
+            print(f"[CORE] ✓ Promo {promo_num} activada: {fichas} fichas | Total: {get_fichas_restantes()}")
+        
         # Otros comandos si es necesario
+    
+    # Notificar a la GUI si se procesó algún comando
+    if comando_procesado and gui_update_callback:
+        try:
+            gui_update_callback()
+        except Exception as e:
+            print(f"[ERROR] Callback GUI falló: {e}")
