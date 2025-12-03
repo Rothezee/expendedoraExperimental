@@ -11,6 +11,8 @@ import shared_buffer
 config_file = "config.json"
 registro_file = "registro.json"
 
+#GPIO.setwarnings(False) #descomentar para usar en hardware real
+
 # --- CONFIGURACIÓN DE PINES ---
 MOTOR_PIN = 24  # Pin del motor
 ENTHOPER = 16  # Sensor para contar fichas que salen
@@ -308,4 +310,5 @@ def detener_sistema():
     GPIO.output(MOTOR_PIN, GPIO.LOW)
     GPIO.cleanup()
     # print("Sistema detenido")
+
 
