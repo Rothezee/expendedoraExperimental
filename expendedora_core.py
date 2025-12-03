@@ -13,7 +13,7 @@ registro_file = "registro.json"
 
 # --- CONFIGURACIÓN DE PINES ---
 MOTOR_PIN = 24  # Pin del motor
-ENTHOPER = 23  # Sensor para contar fichas que salen
+ENTHOPER = 16  # Sensor para contar fichas que salen
 
 # --- CONFIGURACIÓN DEL SENSOR ---
 PULSO_MIN = 0.05  # Duración mínima del pulso (50ms) - filtro de ruido
@@ -308,3 +308,4 @@ def detener_sistema():
     GPIO.output(MOTOR_PIN, GPIO.LOW)
     GPIO.cleanup()
     # print("Sistema detenido")
+
