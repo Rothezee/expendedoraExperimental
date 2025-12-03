@@ -153,7 +153,7 @@ El sensor debe estar conectado de manera que:
 | Parámetro | Valor | Descripción |
 |-----------|-------|-------------|
 | `MOTOR_PIN` | 24 | Pin GPIO del motor |
-| `ENTHOPER` | 23 | Pin GPIO del sensor |
+| `ENTHOPER` | 16 | Pin GPIO del sensor |
 | `PULSO_MIN` | 0.05s (50ms) | Filtro de ruido |
 | `PULSO_MAX` | 0.5s (500ms) | Detección de atascos |
 | Polling | 0.005s (5ms) | Velocidad de lectura |
@@ -161,3 +161,5 @@ El sensor debe estar conectado de manera que:
 ✅ Sistema probado y funcionando correctamente
 ✅ No requiere calibración de velocidad del motor
 ✅ Filtrado automático de rebotes y ruido
+
+
