@@ -66,6 +66,7 @@ class ExpendedoraGUI:
 
         # Registrar función de actualización con el core
         core.registrar_gui_actualizar(self.sincronizar_desde_core)
+        shared_buffer.set_gui_update_callback(self.sincronizar_desde_core)
 
         # Header
         self.header_frame = tk.Frame(root, bg="#333")
@@ -646,3 +647,4 @@ if __name__ == "__main__":
     app = ExpendedoraGUI(root, "username")  # Reemplazar "username" con el nombre de usuario actual
 
     root.mainloop()
+
