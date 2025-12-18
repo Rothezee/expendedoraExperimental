@@ -60,6 +60,11 @@ class ExpendedoraGUI:
             "fichas_restantes": 0
         }
 
+
+        # Flag para controlar si se realizó un cierre del día
+        self.cierre_realizado = False
+        self.contadores_parciales_pre_cierre = {}
+
         # Archivo de configuración
         self.config_file = "config.json"
         self.cargar_configuracion()
@@ -158,6 +163,10 @@ class ExpendedoraGUI:
 
         self.mostrar_frame(self.main_frame)
 
+        # Reiniciar el contador de sesión al iniciar la GUI
+        shared_buffer.gui_to_core_queue.put({'type': 'reset_sesion'})
+        print(f"[GUI] Sesión iniciada para usuario: {username}")
+
     #def enviar_datos_al_servidor(self):
     #    datos = {
     #        "device_id": "EXPENDEDORA_1",
@@ -219,23 +228,11 @@ class ExpendedoraGUI:
                 config = json.load(f)
                 self.promociones = config.get("promociones", self.promociones)
                 self.valor_ficha = config.get("valor_ficha", self.valor_ficha)
+                
+                # Cargar contadores, pero no reiniciar los de la sesión actual aquí
                 self.contadores = config.get("contadores", self.contadores)
                 self.contadores_apertura = config.get("contadores_apertura", self.contadores_apertura)
                 self.contadores_parciales = config.get("contadores_parciales", self.contadores_parciales)
-
-                # **SOLUCIÓN**: Al iniciar la GUI, solo reiniciar los contadores de la sesión actual.
-                # Los contadores de apertura y parciales deben persistir hasta que se realice un cierre.
-                self.contadores = {
-                    "fichas_expendidas": 0,
-                    "dinero_ingresado": 0,
-                    "promo1_contador": 0,
-                    "promo2_contador": 0,
-                    "promo3_contador": 0,
-                    "fichas_restantes": 0 # Siempre inicia en 0 para sincronizar con el hardware
-                }
-
-                # Guardar inmediatamente la configuración reseteada
-                self.guardar_configuracion()
         else:
             self.guardar_configuracion()
 
@@ -417,6 +414,10 @@ class ExpendedoraGUI:
         except requests.exceptions.RequestException as e:
             print(f"Error al conectar con el servidor: {e}")    
         
+        # IMPORTANTE: Guardar los contadores parciales ANTES de resetear
+        # para que el subcierre tenga los datos correctos
+        self.contadores_parciales_pre_cierre = self.contadores_parciales.copy()
+        
         self.contadores = {
             "fichas_expendidas": 0, 
             "dinero_ingresado": 0,
@@ -442,6 +443,10 @@ class ExpendedoraGUI:
             "promo3_contador": 0,
             "fichas_restantes": 0
         }
+        
+        # Marcar que se realizó un cierre para evitar doble reporte en cerrar_sesion
+        self.cierre_realizado = True
+        
         self.guardar_configuracion()
 
     def realizar_cierre_parcial(self):
@@ -496,37 +501,66 @@ class ExpendedoraGUI:
         self.guardar_configuracion()
 
     def cerrar_sesion(self):
-        # Realizar cierre parcial antes de cerrar sesión
-        Subcierre_info = {
-            "device_id": "EXPENDEDORA_1",
-            "partial_fichas": self.contadores_parciales['fichas_expendidas'],
-            "partial_dinero": self.contadores_parciales['dinero_ingresado'],
-            "partial_p1": self.contadores_parciales['promo1_contador'],
-            "partial_p2": self.contadores_parciales['promo2_contador'],
-            "partial_p3": self.contadores_parciales['promo3_contador'],
-            "employee_id": self.username
-        }
+        # Determinar qué contadores usar para el subcierre
+        # Si se hizo un cierre del día, usar los contadores guardados antes del cierre
+        # Si NO se hizo cierre, usar los contadores parciales actuales
+        if hasattr(self, 'cierre_realizado') and self.cierre_realizado:
+            # Ya se hizo un cierre del día, usar los contadores guardados
+            contadores_a_enviar = getattr(self, 'contadores_parciales_pre_cierre', {
+                "fichas_expendidas": 0,
+                "dinero_ingresado": 0,
+                "promo1_contador": 0,
+                "promo2_contador": 0,
+                "promo3_contador": 0
+            })
+            print("[GUI] Usando contadores pre-cierre para subcierre")
+        else:
+            # No se hizo cierre, usar contadores parciales actuales
+            contadores_a_enviar = self.contadores_parciales
+            print("[GUI] Usando contadores parciales actuales para subcierre")
+        
+        # Solo enviar subcierre si hay datos relevantes
+        tiene_datos = (
+            contadores_a_enviar['fichas_expendidas'] > 0 or
+            contadores_a_enviar['dinero_ingresado'] > 0 or
+            contadores_a_enviar['promo1_contador'] > 0 or
+            contadores_a_enviar['promo2_contador'] > 0 or
+            contadores_a_enviar['promo3_contador'] > 0
+        )
+        
+        if tiene_datos:
+            Subcierre_info = {
+                "device_id": "EXPENDEDORA_1",
+                "partial_fichas": contadores_a_enviar['fichas_expendidas'],
+                "partial_dinero": contadores_a_enviar['dinero_ingresado'],
+                "partial_p1": contadores_a_enviar['promo1_contador'],
+                "partial_p2": contadores_a_enviar['promo2_contador'],
+                "partial_p3": contadores_a_enviar['promo3_contador'],
+                "employee_id": self.username
+            }
 
-        # Enviar datos al servidor
-        try:
-            response = requests.post(DNS + urlSubcierre, json=Subcierre_info)
-            if response.status_code == 200:
-                print("Datos de cierre parcial enviados con éxito")
-            else:
-                print(f"Error al enviar datos de cierre parcial: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error al conectar con el servidor: {e}")
+            # Enviar datos al servidor
+            try:
+                response = requests.post(DNS + urlSubcierre, json=Subcierre_info)
+                if response.status_code == 200:
+                    print("Datos de cierre parcial enviados con éxito")
+                else:
+                    print(f"Error al enviar datos de cierre parcial: {response.status_code}")
+            except requests.exceptions.RequestException as e:
+                print(f"Error al conectar con el servidor: {e}")
 
-        try:
-            response = requests.post(DNSLocal + urlSubcierre, json=Subcierre_info)
-            if response.status_code == 200:
-                print("Datos de cierre parcial enviados con éxito")
-            else:
-                print(f"Error al enviar datos de cierre parcial: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error al conectar con el servidor: {e}")
+            try:
+                response = requests.post(DNSLocal + urlSubcierre, json=Subcierre_info)
+                if response.status_code == 200:
+                    print("Datos de cierre parcial enviados con éxito")
+                else:
+                    print(f"Error al enviar datos de cierre parcial: {response.status_code}")
+            except requests.exceptions.RequestException as e:
+                print(f"Error al conectar con el servidor: {e}")
+        else:
+            print("[GUI] No hay datos para enviar en el subcierre")
 
-        # Reiniciar los contadores
+        # Reiniciar los contadores para la próxima sesión
         self.contadores = {
             "fichas_expendidas": 0,
             "dinero_ingresado": 0,
@@ -544,7 +578,7 @@ class ExpendedoraGUI:
             "fichas_restantes": 0
         }
         
-        # **SOLUCIÓN**: Actualizar la GUI con los contadores en cero ANTES de guardar
+        # Actualizar la GUI con los contadores en cero ANTES de guardar
         self.actualizar_contadores_gui()
         self.guardar_configuracion()
 
@@ -559,7 +593,7 @@ class ExpendedoraGUI:
 
         user_management = UserManagement(iniciar_expendedora)
         user_management.run()
-
+        
     def actualizar_contadores_gui(self):
         for key in self.contadores_labels:
             valor = self.contadores[key]
@@ -647,4 +681,3 @@ if __name__ == "__main__":
     app = ExpendedoraGUI(root, "username")  # Reemplazar "username" con el nombre de usuario actual
 
     root.mainloop()
-
