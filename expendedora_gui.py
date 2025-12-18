@@ -362,9 +362,40 @@ class ExpendedoraGUI:
             "promo3_contador": 0,
             "fichas_restantes": 0
         }
+        
+        # Insertar cierre inicial con todo en 0 para registrar el día
+        cierre_inicial = {
+            "id_expendedora": "EXPENDEDORA_1",
+            "fichas": 0,
+            "dinero": 0,
+            "p1": 0,
+            "p2": 0,
+            "p3": 0
+        }
+        
+        # Enviar cierre inicial al servidor remoto
+        try:
+            response = requests.post(DNS + urlCierres, json=cierre_inicial)
+            if response.status_code == 200:
+                print("Cierre inicial (apertura) enviado con éxito al servidor remoto")
+            else:
+                print(f"Error al enviar cierre inicial al servidor remoto: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error al conectar con el servidor remoto: {e}")
+        
+        # Enviar cierre inicial al servidor local
+        try:
+            response = requests.post(DNSLocal + urlCierres, json=cierre_inicial)
+            if response.status_code == 200:
+                print("Cierre inicial (apertura) enviado con éxito al servidor local")
+            else:
+                print(f"Error al enviar cierre inicial al servidor local: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error al conectar con el servidor local: {e}")
+        
         self.actualizar_contadores_gui()
         self.guardar_configuracion()
-        messagebox.showinfo("Apertura", "Apertura del día realizada con éxito.")
+        messagebox.showinfo("Apertura", "Apertura del día realizada con éxito.\nRegistro inicial creado en el sistema.")
 
     def realizar_cierre(self):
         # Realiza el cierre del día
@@ -681,3 +712,4 @@ if __name__ == "__main__":
     app = ExpendedoraGUI(root, "username")  # Reemplazar "username" con el nombre de usuario actual
 
     root.mainloop()
+
