@@ -11,7 +11,7 @@ import shared_buffer
 config_file = "config.json"
 registro_file = "registro.json"
 
-#GPIO.setwarnings(False) #descomentar para usar en hardware real
+#GPIO.setwarnings(False) descomentar para usar en hardware real
 
 # --- CONFIGURACIÓN DE PINES ---
 MOTOR_PIN = 24  # Pin del motor
@@ -26,9 +26,6 @@ DB_FILE = "expendedora.db"
 
 # --- CONFIGURACIÓN DE SERVIDORES ---
 SERVER_HEARTBEAT = "https://maquinasbonus.com/esp32_project/insert_heartbeat.php"
-
-# --- VARIABLES DEL SISTEMA ---
-# Variables globales removidas, ahora se usan shared_buffer
 
 # --- CALLBACK SIMPLE PARA NOTIFICAR CAMBIOS ---
 gui_actualizar_funcion = None  # Función simple que actualiza la GUI cuando cambian los contadores
@@ -136,11 +133,11 @@ def set_config(clave, valor):
     conn.close()
 
 def enviar_datos_venta_servidor():
-    """Envía los datos de la última venta al servidor."""
-    # NOTA: Esta función se llama cuando el motor se detiene.
-    # Aquí se deben obtener los datos relevantes de la venta que acaba de terminar.
-    # Por ahora, enviamos los contadores totales como ejemplo.
-    # En el futuro, se podría implementar un sistema para rastrear ventas individuales.
+    """
+    NOTA: Esta función se llama cuando el motor se detiene.
+        Aquí se deben obtener los datos relevantes de la venta que acaba de terminar.
+        Enviamos el contador TOTAL para el servidor, no el de sesión.
+    """
 
     DNS = "https://maquinasbonus.com/"  # DNS servidor
     DNSLocal = "http://127.0.0.1/"  # DNS servidor local
@@ -148,8 +145,8 @@ def enviar_datos_venta_servidor():
 
     datos = {
         "device_id": "EXPENDEDORA_1",
-        "dato1": int(shared_buffer.get_fichas_expendidas()), # Asegurar que es entero
-        "dato2": int(shared_buffer.get_r_cuenta()) # Asegurar que es float
+        "dato1": int(shared_buffer.get_fichas_expendidas_total()), # Usar contador TOTAL
+        "dato2": int(shared_buffer.get_r_cuenta()) # Asegurar que es entero
     }
     try:
         # Usamos la URL de datos generales para reportar la venta
@@ -269,23 +266,21 @@ def convertir_fichas():
     
     cuenta = shared_buffer.get_cuenta()
     fichas_a_agregar = 0
-    # ... Lógica para determinar cuántas fichas agregar basado en 'cuenta' ...
-    # Por ejemplo:
+    # Lógica para determinar cuántas fichas agregar basado en 'cuenta'
     if cuenta >= valor1:
-        fichas_a_agregar = fichas1 # Simplificado, aquí iría tu lógica completa
+        fichas_a_agregar = fichas1
         shared_buffer.add_to_cuenta(-valor1)
-
+    
     if fichas_a_agregar > 0:
         shared_buffer.agregar_fichas(fichas_a_agregar)
-        # El resto de la lógica (r_sal, etc.) debería manejarse centralizadamente si es posible
 
 # --- FUNCIONES PARA LA GUI ---
 def obtener_dinero_ingresado():
     return shared_buffer.get_cuenta()
 
 def obtener_fichas_disponibles():
-    return get_fichas_restantes()
-
+    # return get_fichas_restantes() linea que funcionaba anteriormente 12/3/2025
+    return shared_buffer.get_fichas_restantes()
 def expender_fichas(cantidad):
     """
     Función llamada desde la GUI para agregar fichas al dispensador
@@ -310,5 +305,3 @@ def detener_sistema():
     GPIO.output(MOTOR_PIN, GPIO.LOW)
     GPIO.cleanup()
     # print("Sistema detenido")
-
-
