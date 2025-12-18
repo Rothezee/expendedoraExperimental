@@ -14,6 +14,7 @@ shared_data_lock = threading.Lock()
 shared_data = {
     'fichas_restantes': 0,
     'fichas_expendidas': 0,
+    'fichas_expendidas_sesion': 0,  # NUEVO: Contador de sesión actual
     'cuenta': 0,
     'r_cuenta': 0,
     'r_sal': 0,
@@ -37,6 +38,12 @@ def get_fichas_restantes():
         return shared_data['fichas_restantes']
 
 def get_fichas_expendidas():
+    """Devuelve el contador de la sesión actual, NO el global"""
+    with shared_data_lock:
+        return shared_data['fichas_expendidas_sesion']
+
+def get_fichas_expendidas_total():
+    """Devuelve el contador total (para reportes al servidor)"""
     with shared_data_lock:
         return shared_data['fichas_expendidas']
 
@@ -48,6 +55,12 @@ def set_fichas_expendidas(value):
     with shared_data_lock:
         shared_data['fichas_expendidas'] = value
 
+def reset_fichas_expendidas_sesion():
+    """Reinicia el contador de sesión (llamar al inicio de sesión o cierre)"""
+    with shared_data_lock:
+        shared_data['fichas_expendidas_sesion'] = 0
+        print(f"[BUFFER] Contador de sesión reiniciado. Total global: {shared_data['fichas_expendidas']}")
+
 def agregar_fichas(cantidad):
     with shared_data_lock:
         shared_data['fichas_restantes'] += cantidad
@@ -57,7 +70,8 @@ def decrementar_fichas_restantes():
     with shared_data_lock:
         if shared_data['fichas_restantes'] > 0:
             shared_data['fichas_restantes'] -= 1
-            shared_data['fichas_expendidas'] += 1
+            shared_data['fichas_expendidas'] += 1  # Contador total
+            shared_data['fichas_expendidas_sesion'] += 1  # Contador de sesión
             return True
     return False
 
@@ -138,6 +152,10 @@ def process_gui_commands():
             agregar_fichas(fichas)
             increment_promo_count(promo_num)
             print(f"[CORE] ✓ Promo {promo_num} activada: {fichas} fichas | Total: {get_fichas_restantes()}")
+        
+        elif command['type'] == 'reset_sesion':
+            # Comando para reiniciar la sesión
+            reset_fichas_expendidas_sesion()
         
         # Otros comandos si es necesario
     
