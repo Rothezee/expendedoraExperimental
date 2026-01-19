@@ -50,7 +50,7 @@ def cargar_configuracion():
         with open(config_file, 'r') as f:
             return json.load(f)
     else:
-        return {"promociones": {}, "valor_ficha": 1.0}
+        return {"promociones": {}, "valor_ficha": 1.0, "device_id": ""}
 
 def guardar_configuracion(config):
     with open(config_file, 'w') as f:
@@ -143,8 +143,11 @@ def enviar_datos_venta_servidor():
     DNSLocal = "http://127.0.0.1/"  # DNS servidor local
     url = "esp32_project/expendedora/insert_data_expendedora.php"  # URL de datos generales
 
+    config = cargar_configuracion()
+    device_id = config.get("device_id")
+
     datos = {
-        "device_id": "EXPENDEDORA_1",
+        "device_id": device_id,
         "dato1": int(shared_buffer.get_fichas_expendidas_total()), # Usar contador TOTAL
         "dato2": int(shared_buffer.get_r_cuenta()) # Asegurar que es entero
     }
@@ -163,7 +166,9 @@ def enviar_datos_venta_servidor():
 
 # --- ENVÍO DE DATOS AL SERVIDOR ---
 def enviar_pulso():
-    data = {"device_id": "EXPENDEDORA_1"}
+    config = cargar_configuracion()
+    device_id = config.get("device_id")
+    data = {"device_id": device_id}
     try:
         response = requests.post(SERVER_HEARTBEAT, json=data)
         # print("Heartbeat enviado:", response.text)
