@@ -19,12 +19,14 @@ class LoginWindow:
         self.user_label.pack(pady=5)
         self.user_entry = tk.Entry(self.window, font=("Arial", 12), bd=2, relief="flat", bg="#ffffff")
         self.user_entry.pack(pady=5, padx=20, fill='x')
+        self.user_entry.bind('<Return>', lambda event: self.password_entry.focus_set())
 
         # Contraseña
         self.password_label = tk.Label(self.window, text="Contraseña", bg="#e9ecef", fg="#495057", font=("Arial", 12))
         self.password_label.pack(pady=5)
         self.password_entry = tk.Entry(self.window, show="*", font=("Arial", 12), bd=2, relief="flat", bg="#ffffff")
         self.password_entry.pack(pady=5, padx=20, fill='x')
+        self.password_entry.bind('<Return>', lambda event: self.login())
 
         # Botón de Iniciar Sesión
         self.login_button = tk.Button(self.window, text="Iniciar Sesión", command=self.login, bg="#007BFF", fg="white", font=("Arial", 12, "bold"), bd=0, padx=10, pady=5)
