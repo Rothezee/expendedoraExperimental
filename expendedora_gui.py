@@ -381,6 +381,8 @@ class ExpendedoraGUI:
         # . (Punto) -> Devolución
         self.root.bind('<period>', lambda e: self.procesar_devolucion_fichas())
         self.root.bind('<KP_Decimal>', lambda e: self.procesar_devolucion_fichas())
+        self.root.bind('<KP_Separator>', lambda e: self.procesar_devolucion_fichas())
+        self.root.bind('<comma>', lambda e: self.procesar_devolucion_fichas())
 
         # --- Configuración de Inputs (Evitar escritura de teclas de acción) ---
         self.entry_fichas.bind('<Return>', lambda e: self.procesar_expender_fichas())
@@ -390,6 +392,8 @@ class ExpendedoraGUI:
         # Navegación cruzada: Ir a Devolución con . desde Fichas
         self.entry_fichas.bind('<KP_Decimal>', lambda e: trigger_input(self.procesar_devolucion_fichas))
         self.entry_fichas.bind('<period>', lambda e: trigger_input(self.procesar_devolucion_fichas))
+        self.entry_fichas.bind('<KP_Separator>', lambda e: trigger_input(self.procesar_devolucion_fichas))
+        self.entry_fichas.bind('<comma>', lambda e: trigger_input(self.procesar_devolucion_fichas))
 
 
 
@@ -406,6 +410,8 @@ class ExpendedoraGUI:
         self.entry_devolucion.bind('<KP_Enter>', lambda e: self.procesar_devolucion_fichas())
         self.entry_devolucion.bind('<KP_Decimal>', lambda e: trigger_input(self.procesar_devolucion_fichas))
         self.entry_devolucion.bind('<period>', lambda e: trigger_input(self.procesar_devolucion_fichas))
+        self.entry_devolucion.bind('<KP_Separator>', lambda e: trigger_input(self.procesar_devolucion_fichas))
+        self.entry_devolucion.bind('<comma>', lambda e: trigger_input(self.procesar_devolucion_fichas))
         # Navegación cruzada: Ir a Expender con + desde Devolución
         self.entry_devolucion.bind('<KP_Add>', lambda e: trigger_input(self.procesar_expender_fichas))
         self.entry_devolucion.bind('<plus>', lambda e: trigger_input(self.procesar_expender_fichas))
