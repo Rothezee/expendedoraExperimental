@@ -356,6 +356,68 @@ class ExpendedoraGUI:
 
         self.actualizar_fecha_hora()
 
+        # --- ATAJOS DE TECLADO ---
+        def trigger_input(func):
+            func()
+            return "break"
+
+        # --- NUEVOS ATAJOS (Teclado Numérico) ---
+        # / (Dividir) -> Promo 1
+        self.root.bind('<slash>', lambda e: self.simular_promo("Promo 1"))
+        self.root.bind('<KP_Divide>', lambda e: self.simular_promo("Promo 1"))
+
+        # * (Multiplicar) -> Promo 2
+        self.root.bind('<asterisk>', lambda e: self.simular_promo("Promo 2"))
+        self.root.bind('<KP_Multiply>', lambda e: self.simular_promo("Promo 2"))
+
+        # - (Restar) -> Promo 3
+        self.root.bind('<minus>', lambda e: self.simular_promo("Promo 3"))
+        self.root.bind('<KP_Subtract>', lambda e: self.simular_promo("Promo 3"))
+
+        # + (Sumar) -> Expender
+        self.root.bind('<plus>', lambda e: self.procesar_expender_fichas())
+        self.root.bind('<KP_Add>', lambda e: self.procesar_expender_fichas())
+
+        # . (Punto) -> Devolución
+        self.root.bind('<period>', lambda e: self.procesar_devolucion_fichas())
+        self.root.bind('<KP_Decimal>', lambda e: self.procesar_devolucion_fichas())
+
+        # --- Configuración de Inputs (Evitar escritura de teclas de acción) ---
+        self.entry_fichas.bind('<Return>', lambda e: self.procesar_expender_fichas())
+        self.entry_fichas.bind('<KP_Enter>', lambda e: self.procesar_expender_fichas())
+        self.entry_fichas.bind('<KP_Add>', lambda e: trigger_input(self.procesar_expender_fichas))
+        self.entry_fichas.bind('<plus>', lambda e: trigger_input(self.procesar_expender_fichas))
+        # Navegación cruzada: Ir a Devolución con . desde Fichas
+        self.entry_fichas.bind('<KP_Decimal>', lambda e: trigger_input(self.procesar_devolucion_fichas))
+        self.entry_fichas.bind('<period>', lambda e: trigger_input(self.procesar_devolucion_fichas))
+
+
+
+        # Promos desde Fichas (Evitar escritura)
+        self.entry_fichas.bind('<slash>', lambda e: trigger_input(lambda: self.simular_promo("Promo 1")))
+        self.entry_fichas.bind('<KP_Divide>', lambda e: trigger_input(lambda: self.simular_promo("Promo 1")))
+        self.entry_fichas.bind('<asterisk>', lambda e: trigger_input(lambda: self.simular_promo("Promo 2")))
+        self.entry_fichas.bind('<KP_Multiply>', lambda e: trigger_input(lambda: self.simular_promo("Promo 2")))
+        self.entry_fichas.bind('<minus>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
+        self.entry_fichas.bind('<KP_Subtract>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
+
+        self.entry_devolucion.bind('<Return>', lambda e: self.procesar_devolucion_fichas())
+  
+        self.entry_devolucion.bind('<KP_Enter>', lambda e: self.procesar_devolucion_fichas())
+        self.entry_devolucion.bind('<KP_Decimal>', lambda e: trigger_input(self.procesar_devolucion_fichas))
+        self.entry_devolucion.bind('<period>', lambda e: trigger_input(self.procesar_devolucion_fichas))
+        # Navegación cruzada: Ir a Expender con + desde Devolución
+        self.entry_devolucion.bind('<KP_Add>', lambda e: trigger_input(self.procesar_expender_fichas))
+        self.entry_devolucion.bind('<plus>', lambda e: trigger_input(self.procesar_expender_fichas))
+
+        # Promos desde Devolución (Evitar escritura)
+        self.entry_devolucion.bind('<slash>', lambda e: trigger_input(lambda: self.simular_promo("Promo 1")))
+        self.entry_devolucion.bind('<KP_Divide>', lambda e: trigger_input(lambda: self.simular_promo("Promo 1")))
+        self.entry_devolucion.bind('<asterisk>', lambda e: trigger_input(lambda: self.simular_promo("Promo 2")))
+        self.entry_devolucion.bind('<KP_Multiply>', lambda e: trigger_input(lambda: self.simular_promo("Promo 2")))
+        self.entry_devolucion.bind('<minus>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
+        self.entry_devolucion.bind('<KP_Subtract>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
+
         self.mostrar_frame(self.main_frame)
 
         # Reiniciar el contador de sesión al iniciar la GUI
@@ -527,6 +589,7 @@ class ExpendedoraGUI:
         try:
             cantidad_str = self.entry_fichas.get()
             if not cantidad_str:
+                self.entry_fichas.focus_set()
                 return
             
             cantidad_fichas = int(cantidad_str)
@@ -565,6 +628,7 @@ class ExpendedoraGUI:
             
             # Limpiar el campo de entrada
             self.entry_fichas.delete(0, tk.END)
+            self.root.focus()
             
         except ValueError:
             messagebox.showerror("Error", "Ingrese un valor numérico válido.")
@@ -573,6 +637,7 @@ class ExpendedoraGUI:
         try:
             cantidad_str = self.entry_devolucion.get()
             if not cantidad_str:
+                self.entry_devolucion.focus_set()
                 return
             
             cantidad_fichas = int(cantidad_str)
@@ -600,6 +665,7 @@ class ExpendedoraGUI:
 
             # Limpiar el campo de entrada
             self.entry_devolucion.delete(0, tk.END)
+            self.root.focus()
             messagebox.showinfo("Devolución", f"Se han agregado {cantidad_fichas} fichas de devolución.")
             
         except ValueError:
