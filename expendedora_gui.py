@@ -357,78 +357,75 @@ class ExpendedoraGUI:
         self.actualizar_fecha_hora()
 
         # --- ATAJOS DE TECLADO ---
-        def trigger_input(func):
+        def trigger_action(func):
             func()
             return "break"
 
         # --- NUEVOS ATAJOS (Teclado Numérico) ---
+        # --- Configuración Global (Root) ---
         # / (Dividir) -> Promo 1
         self.root.bind('<slash>', lambda e: self.simular_promo("Promo 1"))
         self.root.bind('<KP_Divide>', lambda e: self.simular_promo("Promo 1"))
 
-        # + (Sumar) -> Promo 2
-        self.root.bind('<plus>', lambda e: self.simular_promo("Promo 2"))
-        self.root.bind('<KP_Add>', lambda e: self.simular_promo("Promo 2"))
+        # * (Multiplicar) -> Promo 2
+        # * (Multiplicar/x) -> Promo 2
+        self.root.bind('<asterisk>', lambda e: self.simular_promo("Promo 2"))
+        self.root.bind('<KP_Multiply>', lambda e: self.simular_promo("Promo 2"))
+        self.root.bind('x', lambda e: self.simular_promo("Promo 2"))
 
-        # . (Punto) -> Promo 3
-        self.root.bind('<period>', lambda e: self.simular_promo("Promo 3"))
-        self.root.bind('<KP_Decimal>', lambda e: self.simular_promo("Promo 3"))
-        self.root.bind('<KP_Separator>', lambda e: self.simular_promo("Promo 3"))
-        self.root.bind('<comma>', lambda e: self.simular_promo("Promo 3"))
+        # - (Restar) -> Promo 3
+        self.root.bind('<minus>', lambda e: self.simular_promo("Promo 3"))
+        self.root.bind('<KP_Subtract>', lambda e: self.simular_promo("Promo 3"))
 
-        # - (Restar) -> Expender
-        self.root.bind('<minus>', lambda e: self.procesar_expender_fichas())
-        self.root.bind('<KP_Subtract>', lambda e: self.procesar_expender_fichas())
+        # + (Sumar) -> Expender
+        self.root.bind('<plus>', lambda e: self.procesar_expender_fichas())
+        self.root.bind('<KP_Add>', lambda e: self.procesar_expender_fichas())
 
-        # x / * (Multiplicar) -> Devolución
-        self.root.bind('<asterisk>', lambda e: self.procesar_devolucion_fichas())
-        self.root.bind('<KP_Multiply>', lambda e: self.procesar_devolucion_fichas())
-        self.root.bind('<x>', lambda e: self.procesar_devolucion_fichas())
+        # . (Punto) -> Devolución
+        self.root.bind('<period>', lambda e: self.procesar_devolucion_fichas())
+        self.root.bind('<KP_Decimal>', lambda e: self.procesar_devolucion_fichas())
+        self.root.bind('<KP_Separator>', lambda e: self.procesar_devolucion_fichas())
+        self.root.bind('<comma>', lambda e: self.procesar_devolucion_fichas())
 
         # --- Configuración de Inputs (Evitar escritura de teclas de acción) ---
         self.entry_fichas.bind('<Return>', lambda e: self.procesar_expender_fichas())
         self.entry_fichas.bind('<KP_Enter>', lambda e: self.procesar_expender_fichas())
+        self.entry_fichas.bind('<KP_Add>', lambda e: trigger_action(self.procesar_expender_fichas))
+        self.entry_fichas.bind('<plus>', lambda e: trigger_action(self.procesar_expender_fichas))
+        # Navegación cruzada: Ir a Devolución con . desde Fichas
+        self.entry_fichas.bind('<KP_Decimal>', lambda e: trigger_action(self.procesar_devolucion_fichas))
+        self.entry_fichas.bind('<period>', lambda e: trigger_action(self.procesar_devolucion_fichas))
+        # --- Configuración de Inputs (Prioridad y bloqueo de escritura) ---
+        # Aplicamos los mismos atajos a los campos de texto para que funcionen
+        # cuando el foco está en ellos, y evitamos que se escriba el caracter.
         
-        # Expender con -
-        self.entry_fichas.bind('<minus>', lambda e: trigger_input(self.procesar_expender_fichas))
-        self.entry_fichas.bind('<KP_Subtract>', lambda e: trigger_input(self.procesar_expender_fichas))
-        
-        # Navegación cruzada: Ir a Devolución con x/* desde Fichas
-        self.entry_fichas.bind('<asterisk>', lambda e: trigger_input(self.procesar_devolucion_fichas))
-        self.entry_fichas.bind('<KP_Multiply>', lambda e: trigger_input(self.procesar_devolucion_fichas))
-        self.entry_fichas.bind('<x>', lambda e: trigger_input(self.procesar_devolucion_fichas))
+        for entry in [self.entry_fichas, self.entry_devolucion]:
+            # Promo 1
+            entry.bind('<slash>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
+            entry.bind('<KP_Divide>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
+            
+            # Promo 2
+            entry.bind('<asterisk>', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
+            entry.bind('<KP_Multiply>', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
+            entry.bind('x', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
 
-        # Promos desde Fichas (Evitar escritura)
-        self.entry_fichas.bind('<slash>', lambda e: trigger_input(lambda: self.simular_promo("Promo 1")))
-        self.entry_fichas.bind('<KP_Divide>', lambda e: trigger_input(lambda: self.simular_promo("Promo 1")))
-        self.entry_fichas.bind('<plus>', lambda e: trigger_input(lambda: self.simular_promo("Promo 2")))
-        self.entry_fichas.bind('<KP_Add>', lambda e: trigger_input(lambda: self.simular_promo("Promo 2")))
-        self.entry_fichas.bind('<period>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
-        self.entry_fichas.bind('<KP_Decimal>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
-        self.entry_fichas.bind('<KP_Separator>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
-        self.entry_fichas.bind('<comma>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
+            # Promo 3
+            entry.bind('<minus>', lambda e: trigger_action(lambda: self.simular_promo("Promo 3")))
+            entry.bind('<KP_Subtract>', lambda e: trigger_action(lambda: self.simular_promo("Promo 3")))
 
-        self.entry_devolucion.bind('<Return>', lambda e: self.procesar_devolucion_fichas())
-        self.entry_devolucion.bind('<KP_Enter>', lambda e: self.procesar_devolucion_fichas())
-        
-        # Devolución con x/*
-        self.entry_devolucion.bind('<asterisk>', lambda e: trigger_input(self.procesar_devolucion_fichas))
-        self.entry_devolucion.bind('<KP_Multiply>', lambda e: trigger_input(self.procesar_devolucion_fichas))
-        self.entry_devolucion.bind('<x>', lambda e: trigger_input(self.procesar_devolucion_fichas))
-        
-        # Navegación cruzada: Ir a Expender con - desde Devolución
-        self.entry_devolucion.bind('<minus>', lambda e: trigger_input(self.procesar_expender_fichas))
-        self.entry_devolucion.bind('<KP_Subtract>', lambda e: trigger_input(self.procesar_expender_fichas))
+            # Expender (+)
+            entry.bind('<plus>', lambda e: trigger_action(self.procesar_expender_fichas))
+            entry.bind('<KP_Add>', lambda e: trigger_action(self.procesar_expender_fichas))
 
-        # Promos desde Devolución (Evitar escritura)
-        self.entry_devolucion.bind('<slash>', lambda e: trigger_input(lambda: self.simular_promo("Promo 1")))
-        self.entry_devolucion.bind('<KP_Divide>', lambda e: trigger_input(lambda: self.simular_promo("Promo 1")))
-        self.entry_devolucion.bind('<plus>', lambda e: trigger_input(lambda: self.simular_promo("Promo 2")))
-        self.entry_devolucion.bind('<KP_Add>', lambda e: trigger_input(lambda: self.simular_promo("Promo 2")))
-        self.entry_devolucion.bind('<period>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
-        self.entry_devolucion.bind('<KP_Decimal>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
-        self.entry_devolucion.bind('<KP_Separator>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
-        self.entry_devolucion.bind('<comma>', lambda e: trigger_input(lambda: self.simular_promo("Promo 3")))
+            # Devolución (.)
+            entry.bind('<period>', lambda e: trigger_action(self.procesar_devolucion_fichas))
+            entry.bind('<KP_Decimal>', lambda e: trigger_action(self.procesar_devolucion_fichas))
+            entry.bind('<KP_Separator>', lambda e: trigger_action(self.procesar_devolucion_fichas))
+            entry.bind('<comma>', lambda e: trigger_action(self.procesar_devolucion_fichas))
+
+            # Enter para confirmar en los inputs
+            entry.bind('<Return>', lambda e: self.procesar_expender_fichas() if entry == self.entry_fichas else self.procesar_devolucion_fichas())
+            entry.bind('<KP_Enter>', lambda e: self.procesar_expender_fichas() if entry == self.entry_fichas else self.procesar_devolucion_fichas())
 
         self.mostrar_frame(self.main_frame)
 
