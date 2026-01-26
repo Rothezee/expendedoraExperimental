@@ -358,54 +358,75 @@ class ExpendedoraGUI:
 
         # --- ATAJOS DE TECLADO ---
         def trigger_action(func):
+            """Ejecuta una función y previene el comportamiento por defecto"""
             func()
             return "break"
 
         # --- Configuración Global (Root) ---
-        
-        # Flecha ARRIBA -> Expender (Suma)
-        self.root.bind('<Up>', lambda e: self.procesar_expender_fichas())
-        
-        # Flecha ABAJO -> Devolución
-        self.root.bind('<Down>', lambda e: self.procesar_devolucion_fichas())
 
-        # Promociones (Teclado Numérico)
+        # Flecha ARRIBA -> Expender (Suma)
+        self.root.bind('<Up>', lambda e: trigger_action(self.procesar_expender_fichas))
+        self.root.bind('<KP_Up>', lambda e: trigger_action(self.procesar_expender_fichas))  # Teclado numérico
+
+        # Flecha ABAJO -> Devolución
+        self.root.bind('<Down>', lambda e: trigger_action(self.procesar_devolucion_fichas))
+        self.root.bind('<KP_Down>', lambda e: trigger_action(self.procesar_devolucion_fichas))  # Teclado numérico
+
+        # Promociones (Teclado Numérico y Normal)
         # / (Dividir) -> Promo 1
-        self.root.bind('<slash>', lambda e: self.simular_promo("Promo 1"))
-        self.root.bind('<KP_Divide>', lambda e: self.simular_promo("Promo 1"))
+        self.root.bind('<slash>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
+        self.root.bind('<KP_Divide>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
 
         # * (Multiplicar/x) -> Promo 2
-        self.root.bind('<asterisk>', lambda e: self.simular_promo("Promo 2"))
-        self.root.bind('<KP_Multiply>', lambda e: self.simular_promo("Promo 2"))
-        self.root.bind('x', lambda e: self.simular_promo("Promo 2"))
+        self.root.bind('<asterisk>', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
+        self.root.bind('<KP_Multiply>', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
+        self.root.bind('x', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
+        self.root.bind('X', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
 
         # - (Restar) -> Promo 3
-        self.root.bind('<minus>', lambda e: self.simular_promo("Promo 3"))
-        self.root.bind('<KP_Subtract>', lambda e: self.simular_promo("Promo 3"))
+        self.root.bind('<minus>', lambda e: trigger_action(lambda: self.simular_promo("Promo 3")))
+        self.root.bind('<KP_Subtract>', lambda e: trigger_action(lambda: self.simular_promo("Promo 3")))
 
-        # --- Configuración de Inputs (Prioridad y bloqueo de escritura) ---
-        # Vinculamos directamente a los inputs para sobreescribir el comportamiento por defecto.
-        
-        for entry in [self.entry_fichas, self.entry_devolucion]:
-            # Acciones Principales (Flechas)
+        # --- Configuración de Inputs (Bloquear teclas especiales) ---
+        def configurar_input_atajos(entry):
+            """Configura los atajos para un Entry y bloquea escritura de caracteres especiales"""
+            
+            # Acciones Principales (Flechas) - Bloquear navegación cursor
             entry.bind('<Up>', lambda e: trigger_action(self.procesar_expender_fichas))
             entry.bind('<Down>', lambda e: trigger_action(self.procesar_devolucion_fichas))
+            entry.bind('<KP_Up>', lambda e: trigger_action(self.procesar_expender_fichas))
+            entry.bind('<KP_Down>', lambda e: trigger_action(self.procesar_devolucion_fichas))
             
-            # Promos (Bloquear escritura)
+            # Promos (Bloquear escritura de estos caracteres)
             entry.bind('<slash>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
             entry.bind('<KP_Divide>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
             
             entry.bind('<asterisk>', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
             entry.bind('<KP_Multiply>', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
             entry.bind('x', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
+            entry.bind('X', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
 
             entry.bind('<minus>', lambda e: trigger_action(lambda: self.simular_promo("Promo 3")))
             entry.bind('<KP_Subtract>', lambda e: trigger_action(lambda: self.simular_promo("Promo 3")))
 
-            # Enter para confirmar
-            entry.bind('<Return>', lambda e: self.procesar_expender_fichas() if e.widget == self.entry_fichas else self.procesar_devolucion_fichas())
-            entry.bind('<KP_Enter>', lambda e: self.procesar_expender_fichas() if e.widget == self.entry_fichas else self.procesar_devolucion_fichas())
+            # Enter para confirmar (detectar qué campo está activo)
+            def on_enter(event):
+                if event.widget == self.entry_fichas:
+                    self.procesar_expender_fichas()
+                else:
+                    self.procesar_devolucion_fichas()
+                return "break"
+            
+            entry.bind('<Return>', on_enter)
+            entry.bind('<KP_Enter>', on_enter)
+            
+            # IMPORTANTE: Permitir navegación lateral con flechas izquierda/derecha
+            # (No bloquear estas para edición de texto)
+            # Left y Right se dejan sin bind para que funcionen normalmente
 
+        # Aplicar configuración a ambos inputs
+        configurar_input_atajos(self.entry_fichas)
+        configurar_input_atajos(self.entry_devolucion)
         self.mostrar_frame(self.main_frame)
 
         # Reiniciar el contador de sesión al iniciar la GUI
