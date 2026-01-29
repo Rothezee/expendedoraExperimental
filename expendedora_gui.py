@@ -98,9 +98,13 @@ class ExpendedoraGUI:
         # Archivo de configuración
         self.config_file = "config.json"
         self.cargar_configuracion()
+        
+        # Asegurar que el contador de sesión inicie en 0 (para coincidir con el dinero y hardware)
+        self.contadores["fichas_expendidas"] = 0
 
         # Registrar función de actualización con el core
         core.registrar_gui_actualizar(self.sincronizar_desde_core)
+        core.registrar_gui_alerta_motor(self.mostrar_alerta_motor_trabado)
         shared_buffer.set_gui_update_callback(self.sincronizar_desde_core)
 
         # Header
@@ -171,7 +175,7 @@ class ExpendedoraGUI:
             self.contadores_labels[key] = label_valor
 
         crear_card_contador(self.info_frame, "fichas_restantes", "Fichas Restantes", self.colors["primary"])
-        crear_card_contador(self.info_frame, "fichas_expendidas", "Fichas Expendidas", self.colors["success"])
+        # crear_card_contador(self.info_frame, "fichas_expendidas", "Fichas Expendidas", self.colors["success"]) # Movido a Contadores
 
         # --- Helper para Botones Redondeados ---
         def crear_boton_redondeado(parent, text, command, bg_color, fg_color, width=200, height=45, radius=20):
@@ -294,6 +298,7 @@ class ExpendedoraGUI:
         row_dinero = tk.Frame(col_izq, bg=self.colors["bg"])
         row_dinero.pack(fill="x", pady=(0, 10))
         crear_card_contador(row_dinero, "dinero_ingresado", "Dinero Ingresado", self.colors["success"])
+        crear_card_contador(row_dinero, "fichas_expendidas", "Fichas Expendidas", self.colors["success"])
 
         # Fila 2: Desglose Fichas (Normales y Promo)
         row_desglose1 = tk.Frame(col_izq, bg=self.colors["bg"])
@@ -488,6 +493,30 @@ class ExpendedoraGUI:
             # Si after() no funciona, ejecutar directamente
             _actualizar()
 
+    def mostrar_alerta_motor_trabado(self, fichas_pendientes):
+        """
+        Muestra una alerta crítica cuando el motor se traba.
+        Esta función es llamada automáticamente desde el core.
+        """
+        def _mostrar():
+            mensaje = (
+                "⚠️ MOTOR DETENIDO POR SEGURIDAD ⚠️\n\n"
+                f"Fichas pendientes: {fichas_pendientes}\n\n"
+                "ACCIONES REQUERIDAS:\n"
+                "1. Revisar mecanismo dispensador\n"
+                "2. Verificar si hay collar/objeto trabado\n"
+                "3. Liberar obstrucción manualmente\n"
+                "4. Presionar botón de expendio para reintentar\n\n"
+                "IMPORTANTE: Las fichas NO fueron resetadas.\n"
+                "Debe resolver el problema y dispensar las fichas\n"
+                "pendientes para evitar descuadres en el cierre."
+            )
+            messagebox.showerror("⚠️ EMERGENCIA - MOTOR TRABADO", mensaje)
+        
+        try:
+            self.root.after(0, _mostrar)
+        except:
+            _mostrar()
     def cargar_configuracion(self):
         if os.path.exists(self.config_file):
             with open(self.config_file, 'r') as f:
