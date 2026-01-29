@@ -21,6 +21,9 @@ ENTHOPER = 16  # Sensor para contar fichas que salen
 PULSO_MIN = 0.05  # Duración mínima del pulso (50ms) - filtro de ruido
 PULSO_MAX = 0.5   # Duración máxima del pulso (500ms) - filtro de bloqueos
 
+# --- CONFIGURACIÓN DE PROTECCIÓN DEL MOTOR ---
+TIMEOUT_MOTOR = 2.0  # 2 segundos máximo sin dispensar ficha (PROTECCIÓN ANTI-QUEMADO)
+
 # --- CONFIGURACIÓN DE LA BASE DE DATOS ---
 DB_FILE = "expendedora.db"
 
@@ -29,12 +32,19 @@ SERVER_HEARTBEAT = "https://maquinasbonus.com/esp32_project/insert_heartbeat.php
 
 # --- CALLBACK SIMPLE PARA NOTIFICAR CAMBIOS ---
 gui_actualizar_funcion = None  # Función simple que actualiza la GUI cuando cambian los contadores
+gui_alerta_motor_funcion = None  # Función para alertar sobre motor trabado
 
 def registrar_gui_actualizar(funcion):
     """Registra la función de actualización de la GUI"""
     global gui_actualizar_funcion
     gui_actualizar_funcion = funcion
     # print("[CORE] Función de actualización GUI registrada")
+
+def registrar_gui_alerta_motor(funcion):
+    """Registra la función de alerta de motor trabado para la GUI"""
+    global gui_alerta_motor_funcion
+    gui_alerta_motor_funcion = funcion
+    # print("[CORE] Función de alerta motor GUI registrada")
 
 def get_fichas_restantes():
     """Obtener fichas_restantes de forma thread-safe"""
@@ -187,13 +197,16 @@ def controlar_motor():
     - Motor apagado si fichas_restantes == 0
     - Sensor cuenta fichas que salen y decrementa fichas_restantes
     - Implementa detección de pulso completo (HIGH->LOW->HIGH)
+    - ⚠️ PROTECCIÓN ANTI-QUEMADO: Detiene motor si no dispensa ficha en 2 segundos
     - La GUI lee directamente las variables globales (thread-safe via funciones get)
     """
     estado_anterior_sensor = GPIO.input(ENTHOPER)
     ficha_en_sensor = False  # Flag para detectar pulso completo
     tiempo_inicio_pulso = 0
+    tiempo_inicio_motor = 0  # Marca de tiempo cuando arranca el motor
+    motor_con_timeout_activo = False  # Flag para control de timeout
 
-    # print("[CORE] Iniciando hilo de control de motor")
+    print("[CORE] Iniciando hilo de control de motor con protección anti-quemado")
 
     while True:
         # Procesar comandos desde la GUI
@@ -204,12 +217,60 @@ def controlar_motor():
             if not shared_buffer.get_motor_activo():
                 GPIO.output(MOTOR_PIN, GPIO.HIGH)
                 shared_buffer.set_motor_activo(True)
-                # print(f"[MOTOR ON] Fichas pendientes: {shared_buffer.get_fichas_restantes()}")
+                tiempo_inicio_motor = time.time()  # Iniciar contador de timeout
+                motor_con_timeout_activo = True
+                print(f"[MOTOR ON] Fichas pendientes: {shared_buffer.get_fichas_restantes()}")
+            
+            # ⚠️ PROTECCIÓN: Verificar timeout solo si el motor está activo
+            elif motor_con_timeout_activo:
+                tiempo_motor_activo = time.time() - tiempo_inicio_motor
+                if tiempo_motor_activo > TIMEOUT_MOTOR:
+                    # Motor trabado - DETENER INMEDIATAMENTE
+                    GPIO.output(MOTOR_PIN, GPIO.LOW)
+                    shared_buffer.set_motor_activo(False)
+                    motor_con_timeout_activo = False
+                    
+                    fichas_pendientes = shared_buffer.get_fichas_restantes()
+                    
+                    # Alertas críticas
+                    print("=" * 60)
+                    print("⚠️  [EMERGENCIA - MOTOR TRABADO] ⚠️")
+                    print("=" * 60)
+                    print(f"Tiempo transcurrido: {tiempo_motor_activo:.1f}s (límite: {TIMEOUT_MOTOR}s)")
+                    print(f"Fichas pendientes de dispensar: {fichas_pendientes}")
+                    print("ACCIÓN REQUERIDA:")
+                    print("  1. REVISAR MECANISMO - Posible atasco o collar enganchado")
+                    print("  2. LIBERAR OBSTRUCCIÓN manualmente")
+                    print("  3. Presionar botón de expendio nuevamente para reintentar")
+                    print(f"  4. Verificar que salgan las {fichas_pendientes} fichas restantes")
+                    print("=" * 60)
+                    print("IMPORTANTE: Las fichas NO fueron resetadas para evitar")
+                    print("            descuadres en el cierre de caja.")
+                    print("=" * 60)
+                    
+                    # NO resetear fichas - mantener el estado para que el cajero pueda corregir
+                    # Si el operador arregla el problema, puede presionar el botón de nuevo
+                    # y el motor intentará dispensar las fichas pendientes
+                    
+                    # Notificar a la GUI sobre el error crítico
+                    if gui_alerta_motor_funcion:
+                        try:
+                            gui_alerta_motor_funcion(fichas_pendientes)
+                        except Exception as e:
+                            print(f"[ERROR] GUI alerta motor falló: {e}")
+                    
+                    # Actualizar GUI normalmente también
+                    if gui_actualizar_funcion:
+                        try:
+                            gui_actualizar_funcion()
+                        except Exception as e:
+                            print(f"[ERROR] GUI actualizar falló: {e}")
         else:
             if shared_buffer.get_motor_activo():
                 GPIO.output(MOTOR_PIN, GPIO.LOW)
                 shared_buffer.set_motor_activo(False)
-                # print("[MOTOR OFF] Todas las fichas expendidas")
+                motor_con_timeout_activo = False
+                print("[MOTOR OFF] Todas las fichas expendidas")
                 # Enviar reporte de la venta que acaba de terminar
                 enviar_datos_venta_servidor()
 
@@ -237,6 +298,10 @@ def controlar_motor():
                     if shared_buffer.get_fichas_restantes() > 0:
                         shared_buffer.decrementar_fichas_restantes()
                         cambio_realizado = True
+                        
+                        # ✅ RESETEAR TIMEOUT al dispensar ficha exitosamente
+                        tiempo_inicio_motor = time.time()
+                        print(f"✅ [FICHA DISPENSADA] Restantes: {shared_buffer.get_fichas_restantes()}")
 
                         # Actualizar registro
                         actualizar_registro("ficha", 1)
@@ -286,6 +351,7 @@ def obtener_dinero_ingresado():
 def obtener_fichas_disponibles():
     # return get_fichas_restantes() linea que funcionaba anteriormente 12/3/2025
     return shared_buffer.get_fichas_restantes()
+
 def expender_fichas(cantidad):
     """
     Función llamada desde la GUI para agregar fichas al dispensador
@@ -301,7 +367,7 @@ def iniciar_sistema():
     # Iniciar hilo de control del motor
     motor_thread = threading.Thread(target=controlar_motor, daemon=True)
     motor_thread.start()
-    # print("Sistema de control de motor iniciado")
+    print("Sistema de control de motor iniciado con protección anti-quemado")
 
     return motor_thread
 
@@ -309,4 +375,4 @@ def detener_sistema():
     """Apaga el motor y limpia GPIO"""
     GPIO.output(MOTOR_PIN, GPIO.LOW)
     GPIO.cleanup()
-    # print("Sistema detenido")
+    print("Sistema detenido")
