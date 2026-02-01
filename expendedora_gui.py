@@ -499,19 +499,23 @@ class ExpendedoraGUI:
         Esta función es llamada automáticamente desde el core.
         """
         def _mostrar():
-            mensaje = (
-                "⚠️ MOTOR DETENIDO POR SEGURIDAD ⚠️\n\n"
-                f"Fichas pendientes: {fichas_pendientes}\n\n"
-                "ACCIONES REQUERIDAS:\n"
-                "1. Revisar mecanismo dispensador\n"
-                "2. Verificar si hay collar/objeto trabado\n"
-                "3. Liberar obstrucción manualmente\n"
-                "4. Presionar botón de expendio para reintentar\n\n"
-                "IMPORTANTE: Las fichas NO fueron resetadas.\n"
-                "Debe resolver el problema y dispensar las fichas\n"
-                "pendientes para evitar descuadres en el cierre."
-            )
-            messagebox.showerror("⚠️ EMERGENCIA - MOTOR TRABADO", mensaje)
+            mensaje = (f"⚠️ PRECAUCIÓN - MOTOR TRABADO ⚠️\n\n"
+                       f"El motor lleva demasiado tiempo encendido sin dispensar.\n"
+                       f"Fichas pendientes: {fichas_pendientes}\n\n"
+                       f"¿Desea CANCELAR las fichas restantes y poner el contador a 0 para detener el motor?")
+            
+            # Preguntar al usuario si quiere resetear
+            respuesta = messagebox.askyesno("⚠️ MOTOR TRABADO", mensaje, icon='warning')
+            
+            if respuesta:
+                core.vaciar_fichas_restantes()
+                # Actualizar visualmente de inmediato en la GUI
+                self.contadores["fichas_restantes"] = 0
+                self.actualizar_contadores_gui()
+                messagebox.showinfo("Reseteado", "El contador de fichas se ha establecido a 0.")
+            
+            # Al cerrar el cartel (Aceptar), desbloquear el motor para continuar
+            core.desbloquear_motor()
         
         try:
             self.root.after(0, _mostrar)
@@ -766,7 +770,7 @@ class ExpendedoraGUI:
     def realizar_cierre(self):
         # Realiza el cierre del día
         cierre_info = {
-            "device_id": self.device_id,
+            "id_expendedora": self.device_id,
             "fichas_expendidas": self.contadores_apertura['fichas_expendidas'],
             "dinero_ingresado": self.contadores_apertura['dinero_ingresado'],
             "promo1_contador": self.contadores_apertura['promo1_contador'],
@@ -867,7 +871,7 @@ class ExpendedoraGUI:
     def realizar_cierre_parcial(self):
         # Realiza el cierre parcial
         subcierre_info = {
-            "device_id": self.device_id,
+            "cierre_expendedora_id": self.device_id,
             "partial_fichas": self.contadores_parciales['fichas_expendidas'],
             "partial_dinero": self.contadores_parciales['dinero_ingresado'],
             "partial_p1": self.contadores_parciales['promo1_contador'],
@@ -970,7 +974,7 @@ class ExpendedoraGUI:
         
         if tiene_datos:
             Subcierre_info = {
-                "device_id": self.device_id,
+                "cierre_expendedora_id": self.device_id,
                 "partial_fichas": contadores_a_enviar['fichas_expendidas'],
                 "partial_dinero": contadores_a_enviar['dinero_ingresado'],
                 "partial_p1": contadores_a_enviar['promo1_contador'],

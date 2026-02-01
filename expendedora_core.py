@@ -34,6 +34,9 @@ SERVER_HEARTBEAT = "https://maquinasbonus.com/esp32_project/insert_heartbeat.php
 gui_actualizar_funcion = None  # Función simple que actualiza la GUI cuando cambian los contadores
 gui_alerta_motor_funcion = None  # Función para alertar sobre motor trabado
 
+# Variable global para controlar el bloqueo por emergencia
+bloqueo_emergencia = False
+
 def registrar_gui_actualizar(funcion):
     """Registra la función de actualización de la GUI"""
     global gui_actualizar_funcion
@@ -45,6 +48,24 @@ def registrar_gui_alerta_motor(funcion):
     global gui_alerta_motor_funcion
     gui_alerta_motor_funcion = funcion
     # print("[CORE] Función de alerta motor GUI registrada")
+
+def desbloquear_motor():
+    """Permite reanudar el motor después de un bloqueo por timeout"""
+    global bloqueo_emergencia
+    bloqueo_emergencia = False
+    print("[CORE] Motor desbloqueado por usuario, reanudando operación...")
+
+def vaciar_fichas_restantes():
+    """Resetea el contador de fichas restantes a 0"""
+    shared_buffer.set_fichas_restantes(0)
+    print("[CORE] Contador de fichas vaciado (0) por solicitud de usuario.")
+    
+    # Notificar a la GUI para que se sincronice
+    if gui_actualizar_funcion:
+        try:
+            gui_actualizar_funcion()
+        except Exception as e:
+            print(f"[ERROR] GUI actualizar falló: {e}")
 
 def get_fichas_restantes():
     """Obtener fichas_restantes de forma thread-safe"""
@@ -200,6 +221,7 @@ def controlar_motor():
     - ⚠️ PROTECCIÓN ANTI-QUEMADO: Detiene motor si no dispensa ficha en 2 segundos
     - La GUI lee directamente las variables globales (thread-safe via funciones get)
     """
+    global bloqueo_emergencia
     estado_anterior_sensor = GPIO.input(ENTHOPER)
     ficha_en_sensor = False  # Flag para detectar pulso completo
     tiempo_inicio_pulso = 0
@@ -213,7 +235,7 @@ def controlar_motor():
         shared_buffer.process_gui_commands()
 
         # Control del motor basado en fichas_restantes
-        if shared_buffer.get_fichas_restantes() > 0:
+        if shared_buffer.get_fichas_restantes() > 0 and not bloqueo_emergencia:
             if not shared_buffer.get_motor_activo():
                 GPIO.output(MOTOR_PIN, GPIO.HIGH)
                 shared_buffer.set_motor_activo(True)
@@ -229,6 +251,7 @@ def controlar_motor():
                     GPIO.output(MOTOR_PIN, GPIO.LOW)
                     shared_buffer.set_motor_activo(False)
                     motor_con_timeout_activo = False
+                    bloqueo_emergencia = True  # Bloquear motor hasta confirmación de usuario
                     
                     fichas_pendientes = shared_buffer.get_fichas_restantes()
                     
@@ -249,7 +272,7 @@ def controlar_motor():
                     print("=" * 60)
                     
                     # NO resetear fichas - mantener el estado para que el cajero pueda corregir
-                    # Si el operador arregla el problema, puede presionar el botón de nuevo
+                    # Si el operador arregla el problema o cambia de hopper, puede presionar el botón de nuevo
                     # y el motor intentará dispensar las fichas pendientes
                     
                     # Notificar a la GUI sobre el error crítico
@@ -282,45 +305,40 @@ def controlar_motor():
         if not ficha_en_sensor:
             # Estado: Esperando ficha (sensor en HIGH)
             if estado_anterior_sensor == GPIO.HIGH and estado_actual_sensor == GPIO.LOW:
-                # Flanco descendente detectado - Ficha entrando
+                # Flanco descendente detectado - Ficha entrando (CORTADO)
                 ficha_en_sensor = True
                 tiempo_inicio_pulso = tiempo_actual
-                # print(f"[SENSOR] Ficha detectada entrando...")
+                
+                # --- CONTAR AL CORTAR (FLANCO DESCENDENTE) ---
+                if shared_buffer.get_fichas_restantes() > 0:
+                    shared_buffer.decrementar_fichas_restantes()
+                    # Resetear timeout del motor para dar tiempo a que salga
+                    tiempo_inicio_motor = time.time()
+                    print(f"✅ [FICHA DETECTADA - CORTADO] Restantes: {shared_buffer.get_fichas_restantes()}")
+                    
+                    # Actualizar registro
+                    actualizar_registro("ficha", 1)
+                    
+                    # Notificar a la GUI inmediatamente
+                    if gui_actualizar_funcion:
+                        try:
+                            gui_actualizar_funcion()
+                        except Exception as e:
+                            print(f"[ERROR] GUI actualizar falló: {e}")
+                else:
+                    print("[ADVERTENCIA] Sensor activado pero contador en 0")
         else:
             # Estado: Ficha en el sensor (esperando que salga)
             if estado_actual_sensor == GPIO.HIGH:
                 # Flanco ascendente - Ficha salió completamente
                 duracion_pulso = tiempo_actual - tiempo_inicio_pulso
-
-                # Verificar que el pulso duró un tiempo razonable
-                if PULSO_MIN <= duracion_pulso <= PULSO_MAX:
-                    cambio_realizado = False
-                    if shared_buffer.get_fichas_restantes() > 0:
-                        shared_buffer.decrementar_fichas_restantes()
-                        cambio_realizado = True
-                        
-                        # ✅ RESETEAR TIMEOUT al dispensar ficha exitosamente
-                        tiempo_inicio_motor = time.time()
-                        print(f"✅ [FICHA DISPENSADA] Restantes: {shared_buffer.get_fichas_restantes()}")
-
-                        # Actualizar registro
-                        actualizar_registro("ficha", 1)
-                    else:
-                        print("[ADVERTENCIA] Sensor detectó ficha pero contador ya está en 0")
-
-                    # NOTIFICAR A LA GUI (fuera del lock para evitar deadlock)
-                    if cambio_realizado and gui_actualizar_funcion:
-                        try:
-                            gui_actualizar_funcion()
-                        except Exception as e:
-                            print(f"[ERROR] GUI actualizar falló: {e}")
-
-                elif duracion_pulso < PULSO_MIN:
-                    print(f"[RUIDO IGNORADO] Pulso muy corto: {duracion_pulso*1000:.1f}ms")
-                else:
-                    print(f"[ADVERTENCIA] Pulso muy largo: {duracion_pulso*1000:.1f}ms")
-
                 ficha_en_sensor = False
+
+                # Solo loguear duración, ya se contó al entrar
+                if duracion_pulso < PULSO_MIN:
+                    print(f"[RUIDO POSIBLE] Pulso muy corto: {duracion_pulso*1000:.1f}ms (Ya contada)")
+                elif duracion_pulso > PULSO_MAX:
+                    print(f"[ADVERTENCIA] Pulso muy largo: {duracion_pulso*1000:.1f}ms")
 
         estado_anterior_sensor = estado_actual_sensor
         time.sleep(0.005)  # 5ms de polling - más rápido para mejor detección
