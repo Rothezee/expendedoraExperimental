@@ -14,7 +14,7 @@ shared_data_lock = threading.Lock()
 shared_data = {
     'fichas_restantes': 0,
     'fichas_expendidas': 0,
-    'fichas_expendidas_sesion': 0,  # NUEVO: Contador de sesión actual
+    'fichas_expendidas_sesion': 0, 
     'cuenta': 0,
     'r_cuenta': 0,
     'r_sal': 0,
@@ -59,7 +59,8 @@ def reset_fichas_expendidas_sesion():
     """Reinicia el contador de sesión (llamar al inicio de sesión o cierre)"""
     with shared_data_lock:
         shared_data['fichas_expendidas_sesion'] = 0
-        print(f"[BUFFER] Contador de sesión reiniciado. Total global: {shared_data['fichas_expendidas']}")
+        shared_data['r_cuenta'] = 0
+        print(f"[BUFFER] Contador de sesión y r_cuenta reiniciados. Total global: {shared_data['fichas_expendidas']}")
 
 def agregar_fichas(cantidad):
     with shared_data_lock:
