@@ -501,53 +501,10 @@ class ExpendedoraGUI:
         def _mostrar():
             mensaje = (f"⚠️ PRECAUCIÓN - MOTOR TRABADO ⚠️\n\n"
                        f"El motor lleva demasiado tiempo encendido sin dispensar.\n"
-                       f"¿Desea CANCELAR la venta para detener el motor?")
+                       f"Por favor, verifique el mecanismo y libere la obstrucción.")
             
-            # Preguntar al usuario si quiere resetear
-            respuesta = messagebox.askyesno("⚠️ MOTOR TRABADO", mensaje, icon='warning')
-            
-            if respuesta:
-                # Get the number of dispensed tickets
-                fichas_expendidas = shared_buffer.get_fichas_expendidas()
-
-                # Revert all counters
-                fichas_a_cancelar = shared_buffer.get_fichas_restantes()
-                dinero_a_revertir = (fichas_a_cancelar + fichas_expendidas) * self.valor_ficha
-                
-                # Revertir contadores (Dinero y Fichas Normales)
-                self.contadores["dinero_ingresado"] -= dinero_a_revertir
-                self.contadores_apertura["dinero_ingresado"] -= dinero_a_revertir
-                self.contadores_parciales["dinero_ingresado"] -= dinero_a_revertir
-                
-                self.contadores["fichas_normales"] -= (fichas_a_cancelar + fichas_expendidas)
-                self.contadores_apertura["fichas_normales"] -= (fichas_a_cancelar + fichas_expendidas)
-                self.contadores_parciales["fichas_normales"] -= (fichas_a_cancelar + fichas_expendidas)
-
-                # Reset expended session
-                shared_buffer.reset_fichas_expendidas_sesion()
-                
-                #Setear cuenta en 0
-                shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"])
-                
-                #Setear restantes en 0
-                core.vaciar_fichas_restantes()
-                
-                #Actualizar fichas expendidas
-                self.contadores["fichas_expendidas"] = 0
-                self.contadores_apertura["fichas_expendidas"] = 0
-                self.contadores_parciales["fichas_expendidas"] = 0
-                
-                #Actualizar gui
-                self.actualizar_contadores_gui()
-
-                messagebox.showinfo("Venta Cancelada", f"Se canceló la venta.\nSe descontaron ${dinero_a_revertir:.2f} del dinero ingresado.")
-
-                # Actualizar visualmente de inmediato en la GUI
-                self.contadores["fichas_restantes"] = 0
-                self.actualizar_contadores_gui()
-                messagebox.showinfo("Reseteado", "El contador de fichas se ha establecido a 0.")
-                self.guardar_configuracion()
-                messagebox.showinfo("Venta Cancelada", f"Se cancelaron {fichas_a_cancelar} fichas.\nSe descontaron ${dinero_a_revertir:.2f} del dinero ingresado.")
+            # Mostrar alerta simple (OK) en lugar de pregunta
+            messagebox.showwarning("⚠️ MOTOR TRABADO", mensaje)
 
             # Al cerrar el cartel (Aceptar), desbloquear el motor para continuar
             core.desbloquear_motor()
