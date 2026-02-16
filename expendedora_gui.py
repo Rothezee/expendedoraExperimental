@@ -725,7 +725,7 @@ class ExpendedoraGUI:
         
         # Insertar cierre inicial con todo en 0 para registrar el día
         cierre_inicial = {
-            "device_id": self.device_id,
+            "id_expendedora": self.device_id,
             "fichas_expendidas": self.contadores_apertura['fichas_expendidas'],
             "dinero_ingresado": self.contadores_apertura['dinero_ingresado'],
             "promo1_contador": self.contadores_apertura['promo1_contador'],
@@ -1037,6 +1037,9 @@ class ExpendedoraGUI:
             "fichas_normales": 0,
             "fichas_promocion": 0
         }
+        
+        # Reiniciar contadores en el buffer compartido para asegurar coherencia
+        shared_buffer.reset_fichas_expendidas_sesion()
         
         # Actualizar la GUI con los contadores en cero ANTES de guardar
         self.actualizar_contadores_gui()
