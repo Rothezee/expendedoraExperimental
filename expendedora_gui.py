@@ -1040,6 +1040,7 @@ class ExpendedoraGUI:
         
         # Reiniciar contadores en el buffer compartido para asegurar coherencia
         shared_buffer.reset_fichas_expendidas_sesion()
+        shared_buffer.set_fichas_expendidas(0)
         
         # Actualizar la GUI con los contadores en cero ANTES de guardar
         self.actualizar_contadores_gui()
