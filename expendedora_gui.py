@@ -61,7 +61,8 @@ class ExpendedoraGUI:
             "fichas_restantes": 0,
             "fichas_devolucion": 0,
             "fichas_normales": 0,
-            "fichas_promocion": 0
+            "fichas_promocion": 0,
+            "fichas_cambio": 0
         }
 
         # Contadores de apertura
@@ -74,7 +75,8 @@ class ExpendedoraGUI:
             "fichas_restantes": 0,
             "fichas_devolucion": 0,
             "fichas_normales": 0,
-            "fichas_promocion": 0
+            "fichas_promocion": 0,
+            "fichas_cambio": 0
         }
 
         # Contadores parciales
@@ -87,7 +89,8 @@ class ExpendedoraGUI:
             "fichas_restantes": 0,
             "fichas_devolucion": 0,
             "fichas_normales": 0,
-            "fichas_promocion": 0
+            "fichas_promocion": 0,
+            "fichas_cambio": 0
         }
 
 
@@ -98,6 +101,19 @@ class ExpendedoraGUI:
         # Archivo de configuración
         self.config_file = "config.json"
         self.cargar_configuracion()
+        
+        # Configuración de Scroll Global
+        self.current_canvas = None
+        def _on_mousewheel(event):
+            if self.current_canvas:
+                if event.num == 5 or event.delta < 0:
+                    self.current_canvas.yview_scroll(1, "units")
+                elif event.num == 4 or event.delta > 0:
+                    self.current_canvas.yview_scroll(-1, "units")
+        
+        self.root.bind_all("<MouseWheel>", _on_mousewheel)
+        self.root.bind_all("<Button-4>", _on_mousewheel)
+        self.root.bind_all("<Button-5>", _on_mousewheel)
         
         # Asegurar que el contador de sesión inicie en 0 (para coincidir con el dinero y hardware)
         self.contadores["fichas_expendidas"] = 0
@@ -145,10 +161,7 @@ class ExpendedoraGUI:
         crear_boton_menu("Cerrar Sesión", self.cerrar_sesion, color_bg=self.colors["danger"])
 
         # Página principal
-        self.main_frame = tk.Frame(root, bg=self.colors["bg"])
-        # Contenedor interno para padding
-        main_content = tk.Frame(self.main_frame, bg=self.colors["bg"])
-        main_content.pack(fill="both", expand=True, padx=30, pady=30)
+        self.main_frame, main_content = self.crear_contenedor_scrollable(root)
 
         tk.Label(main_content, text="Panel de Control", font=self.fonts["h1"], bg=self.colors["bg"], fg=self.colors["text"]).pack(anchor="w", pady=(0, 20))
 
@@ -206,18 +219,18 @@ class ExpendedoraGUI:
 
         # --- Sección de Acción ---
         self.botones_frame = tk.Frame(main_content, bg=self.colors["bg"])
-        self.botones_frame.pack(expand=True)
+        self.botones_frame.pack(fill="x")
 
         # Sección de Expendio Manual Integrada
         self.expender_frame = tk.Frame(self.botones_frame, bg=self.colors["card"])
-        self.expender_frame.pack(fill="x", pady=(0, 20))
+        self.expender_frame.pack(fill="x", padx=10, pady=(0, 12))
         
         tk.Frame(self.expender_frame, bg=self.colors["warning"], height=4).pack(fill="x", side="top")
         
-        expender_content = tk.Frame(self.expender_frame, bg=self.colors["card"], padx=20, pady=20)
+        expender_content = tk.Frame(self.expender_frame, bg=self.colors["card"], padx=20, pady=15)
         expender_content.pack(fill="both")
 
-        tk.Label(expender_content, text="Expendio Manual", font=self.fonts["h2"], bg=self.colors["card"], fg=self.colors["warning"]).pack(anchor="w", pady=(0, 15))
+        tk.Label(expender_content, text="Expendio Manual", font=self.fonts["h2"], bg=self.colors["card"], fg=self.colors["warning"]).pack(anchor="w", pady=(0, 10))
         
         input_area = tk.Frame(expender_content, bg=self.colors["card"])
         input_area.pack(anchor="w")
@@ -230,16 +243,16 @@ class ExpendedoraGUI:
         btn_expender = crear_boton_redondeado(input_area, "Expender Ahora", self.procesar_expender_fichas, self.colors["warning"], "white", width=180, height=40)
         btn_expender.pack(side="left", padx=10)
 
-        # Sección de Devolución de Fichas (NUEVO)
+        # Sección de Devolución de Fichas
         self.devolucion_frame = tk.Frame(self.botones_frame, bg=self.colors["card"])
-        self.devolucion_frame.pack(fill="x", pady=(0, 20))
+        self.devolucion_frame.pack(fill="x", padx=10, pady=(0, 12))
         
         tk.Frame(self.devolucion_frame, bg="#9B59B6", height=4).pack(fill="x", side="top") # Color morado para distinguir
         
-        devolucion_content = tk.Frame(self.devolucion_frame, bg=self.colors["card"], padx=20, pady=20)
+        devolucion_content = tk.Frame(self.devolucion_frame, bg=self.colors["card"], padx=20, pady=15)
         devolucion_content.pack(fill="both")
 
-        tk.Label(devolucion_content, text="Devolución de Fichas", font=self.fonts["h2"], bg=self.colors["card"], fg="#9B59B6").pack(anchor="w", pady=(0, 15))
+        tk.Label(devolucion_content, text="Devolución de Fichas", font=self.fonts["h2"], bg=self.colors["card"], fg="#9B59B6").pack(anchor="w", pady=(0, 10))
         
         input_area_dev = tk.Frame(devolucion_content, bg=self.colors["card"])
         input_area_dev.pack(anchor="w")
@@ -252,29 +265,30 @@ class ExpendedoraGUI:
         btn_devolucion = crear_boton_redondeado(input_area_dev, "Devolver Fichas", self.procesar_devolucion_fichas, "#9B59B6", "white", width=180, height=40)
         btn_devolucion.pack(side="left", padx=10)
 
-        # Botones de Promociones
-        promos_container = tk.Frame(self.botones_frame, bg=self.colors["bg"])
-        promos_container.pack(fill="x", pady=20)
+        # Sección de Cambio de Fichas 
+        self.cambio_frame = tk.Frame(self.botones_frame, bg=self.colors["card"])
+        self.cambio_frame.pack(fill="x", padx=10, pady=(0, 12))
         
-        tk.Label(promos_container, text="Acciones Rápidas (Promociones)", font=("Segoe UI", 14, "bold"), bg=self.colors["bg"], fg=self.colors["primary"]).pack(anchor="w", pady=(0, 10))
+        tk.Frame(self.cambio_frame, bg="#1ABC9C", height=4).pack(fill="x", side="top") # Color turquesa
         
-        promos_grid = tk.Frame(promos_container, bg=self.colors["bg"])
-        promos_grid.pack(fill="x")
+        cambio_content = tk.Frame(self.cambio_frame, bg=self.colors["card"], padx=20, pady=15)
+        cambio_content.pack(fill="both")
+
+        tk.Label(cambio_content, text="Cambio de Fichas", font=self.fonts["h2"], bg=self.colors["card"], fg="#1ABC9C").pack(anchor="w", pady=(0, 10))
         
-        # Usar botones redondeados para promos
-        p1 = crear_boton_redondeado(promos_grid, "Simular Promo 1", lambda: self.simular_promo("Promo 1"), self.colors["primary"], "white", width=200)
-        p1.pack(side="left", padx=(0, 10))
+        input_area_cambio = tk.Frame(cambio_content, bg=self.colors["card"])
+        input_area_cambio.pack(anchor="w")
         
-        p2 = crear_boton_redondeado(promos_grid, "Simular Promo 2", lambda: self.simular_promo("Promo 2"), self.colors["primary"], "white", width=200)
-        p2.pack(side="left", padx=10)
+        tk.Label(input_area_cambio, text="Cantidad de Cambio:", font=("Segoe UI", 12, "bold"), bg=self.colors["card"], fg="#7F8C8D").pack(side="left")
+        self.entry_cambio = tk.Entry(input_area_cambio, font=("Segoe UI", 14), width=8, bd=0, bg="#F0F3F4", justify="center")
+        self.entry_cambio.pack(side="left", padx=15)
         
-        p3 = crear_boton_redondeado(promos_grid, "Simular Promo 3", lambda: self.simular_promo("Promo 3"), self.colors["primary"], "white", width=200)
-        p3.pack(side="left", padx=10)
+        # Botón Cambio Redondeado
+        btn_cambio = crear_boton_redondeado(input_area_cambio, "Cambio Fichas", self.procesar_cambio_fichas, "#1ABC9C", "white", width=180, height=40)
+        btn_cambio.pack(side="left", padx=10)
 
         # Página de Contadores
-        self.contadores_page = tk.Frame(root, bg=self.colors["bg"])
-        contadores_content = tk.Frame(self.contadores_page, bg=self.colors["bg"])
-        contadores_content.pack(fill="both", expand=True, padx=30, pady=30)
+        self.contadores_page, contadores_content = self.crear_contenedor_scrollable(root)
         
         tk.Label(contadores_content, text="Contadores en Tiempo Real", font=self.fonts["h1"], bg=self.colors["bg"], fg=self.colors["text"]).pack(anchor="w", pady=(0, 30))
 
@@ -310,6 +324,7 @@ class ExpendedoraGUI:
         row_desglose2 = tk.Frame(col_izq, bg=self.colors["bg"])
         row_desglose2.pack(fill="x", pady=10)
         crear_card_contador(row_desglose2, "fichas_devolucion", "Fichas Devueltas", "#9B59B6")
+        crear_card_contador(row_desglose2, "fichas_cambio", "Fichas Cambio", "#1ABC9C")
         tk.Frame(row_desglose2, bg=self.colors["bg"]).pack(side="left", fill="both", expand=True, padx=10) # Spacer
 
         # --- Contenido Columna Derecha (Promociones en columna) ---
@@ -320,9 +335,7 @@ class ExpendedoraGUI:
         crear_card_contador(col_der, "promo3_contador", "Promo 3 Usadas", self.colors["primary"], side="top", pady=5)
 
         # Página de simulación
-        self.simulacion_frame = tk.Frame(root, bg=self.colors["bg"])
-        sim_content = tk.Frame(self.simulacion_frame, bg=self.colors["bg"])
-        sim_content.pack(fill="both", expand=True, padx=30, pady=30)
+        self.simulacion_frame, sim_content = self.crear_contenedor_scrollable(root)
         
         tk.Label(sim_content, text="Simulación", font=self.fonts["h1"], bg=self.colors["bg"], fg=self.colors["primary"]).pack(anchor="w", pady=(0, 20))
         
@@ -331,9 +344,7 @@ class ExpendedoraGUI:
         crear_boton_redondeado(sim_content, "Simular Entrega de Fichas", self.simular_entrega_fichas, self.colors["success"], "white", width=300).pack(pady=10)
 
         # Página de configuración
-        self.config_frame = tk.Frame(root, bg=self.colors["bg"])
-        config_content = tk.Frame(self.config_frame, bg=self.colors["bg"])
-        config_content.pack(fill="both", expand=True, padx=30, pady=30)
+        self.config_frame, config_content = self.crear_contenedor_scrollable(root)
         
         tk.Label(config_content, text="Configuración", font=self.fonts["h1"], bg=self.colors["bg"], fg=self.colors["primary"]).pack(anchor="w", pady=(0, 20))
         
@@ -343,9 +354,7 @@ class ExpendedoraGUI:
         crear_boton_redondeado(config_content, "Configurar ID Dispositivo", self.configurar_device_id, self.colors["primary"], "white", width=300).pack(pady=5)
 
         # Página de reportes y cierre del día
-        self.reportes_frame = tk.Frame(root, bg=self.colors["bg"])
-        reportes_content = tk.Frame(self.reportes_frame, bg=self.colors["bg"])
-        reportes_content.pack(fill="both", expand=True, padx=30, pady=30)
+        self.reportes_frame, reportes_content = self.crear_contenedor_scrollable(root)
         
         tk.Label(reportes_content, text="Cierre y Reportes", font=self.fonts["h1"], bg=self.colors["bg"], fg=self.colors["danger"]).pack(anchor="w", pady=(0, 20))
         
@@ -369,13 +378,12 @@ class ExpendedoraGUI:
 
         # --- Configuración Global (Root) ---
 
-        # Flecha ARRIBA -> Expender (Suma)
-        self.root.bind('<Up>', lambda e: trigger_action(self.procesar_expender_fichas))
-        self.root.bind('<KP_Up>', lambda e: trigger_action(self.procesar_expender_fichas))  # Teclado numérico
+        # Navegación global básica (si el foco se pierde)
+        self.root.bind('<Up>', lambda e: self.entry_fichas.focus_set())
+        self.root.bind('<KP_Up>', lambda e: self.entry_fichas.focus_set())
 
-        # Flecha ABAJO -> Devolución
-        self.root.bind('<Down>', lambda e: trigger_action(self.procesar_devolucion_fichas))
-        self.root.bind('<KP_Down>', lambda e: trigger_action(self.procesar_devolucion_fichas))  # Teclado numérico
+        self.root.bind('<Down>', lambda e: self.entry_cambio.focus_set())
+        self.root.bind('<KP_Down>', lambda e: self.entry_cambio.focus_set())
 
         # Promociones (Teclado Numérico y Normal)
         # / (Dividir) -> Promo 1
@@ -396,12 +404,21 @@ class ExpendedoraGUI:
         def configurar_input_atajos(entry):
             """Configura los atajos para un Entry y bloquea escritura de caracteres especiales"""
             
-            # Acciones Principales (Flechas) - Bloquear navegación cursor
-            entry.bind('<Up>', lambda e: trigger_action(self.procesar_expender_fichas))
-            entry.bind('<Down>', lambda e: trigger_action(self.procesar_devolucion_fichas))
-            entry.bind('<KP_Up>', lambda e: trigger_action(self.procesar_expender_fichas))
-            entry.bind('<KP_Down>', lambda e: trigger_action(self.procesar_devolucion_fichas))
-            
+            # Navegación entre inputs con flechas
+            if entry == self.entry_fichas:
+                entry.bind('<Down>', lambda e: trigger_action(self.entry_devolucion.focus_set))
+                entry.bind('<KP_Down>', lambda e: trigger_action(self.entry_devolucion.focus_set))
+            elif entry == self.entry_devolucion:
+                entry.bind('<Up>', lambda e: trigger_action(self.entry_fichas.focus_set))
+                entry.bind('<KP_Up>', lambda e: trigger_action(self.entry_fichas.focus_set))
+                entry.bind('<Down>', lambda e: trigger_action(self.entry_cambio.focus_set))
+                entry.bind('<KP_Down>', lambda e: trigger_action(self.entry_cambio.focus_set))
+            elif entry == self.entry_cambio:
+                entry.bind('<Up>', lambda e: trigger_action(self.entry_devolucion.focus_set))
+                entry.bind('<KP_Up>', lambda e: trigger_action(self.entry_devolucion.focus_set))
+                # Down en el último podría ir al primero o nada
+                entry.bind('<Down>', lambda e: trigger_action(self.entry_fichas.focus_set)) # Loop al inicio
+
             # Promos (Bloquear escritura de estos caracteres)
             entry.bind('<slash>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
             entry.bind('<KP_Divide>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
@@ -418,8 +435,10 @@ class ExpendedoraGUI:
             def on_enter(event):
                 if event.widget == self.entry_fichas:
                     self.procesar_expender_fichas()
-                else:
+                elif event.widget == self.entry_devolucion:
                     self.procesar_devolucion_fichas()
+                elif event.widget == self.entry_cambio:
+                    self.procesar_cambio_fichas()
                 return "break"
             
             entry.bind('<Return>', on_enter)
@@ -432,11 +451,47 @@ class ExpendedoraGUI:
         # Aplicar configuración a ambos inputs
         configurar_input_atajos(self.entry_fichas)
         configurar_input_atajos(self.entry_devolucion)
+        configurar_input_atajos(self.entry_cambio)
         self.mostrar_frame(self.main_frame)
 
         # Reiniciar el contador de sesión al iniciar la GUI
         shared_buffer.gui_to_core_queue.put({'type': 'reset_sesion'})
         print(f"[GUI] Sesión iniciada para usuario: {username}")
+
+    def crear_contenedor_scrollable(self, parent):
+        """Crea un frame con scrollbar vertical"""
+        container = tk.Frame(parent, bg=self.colors["bg"])
+        
+        canvas = tk.Canvas(container, bg=self.colors["bg"], highlightthickness=0)
+        scrollbar = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        
+        scrollable_frame = tk.Frame(canvas, bg=self.colors["bg"])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+        
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        
+        def configure_canvas(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+        
+        canvas.bind("<Configure>", configure_canvas)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        container.canvas = canvas
+        
+        # Frame interno con padding
+        content_frame = tk.Frame(scrollable_frame, bg=self.colors["bg"])
+        content_frame.pack(fill="both", expand=True, padx=30, pady=30)
+        
+        return container, content_frame
 
     #def enviar_datos_al_servidor(self):
     #    datos = {
@@ -458,6 +513,12 @@ class ExpendedoraGUI:
         for f in [self.main_frame, self.contadores_page, self.config_frame, self.reportes_frame, self.simulacion_frame]:
             f.pack_forget()
         frame.pack(fill="both", expand=True)
+        
+        if hasattr(frame, 'canvas'):
+            self.current_canvas = frame.canvas
+            frame.canvas.yview_moveto(0)
+        else:
+            self.current_canvas = None
 
     def sincronizar_desde_core(self):
         """
@@ -529,7 +590,7 @@ class ExpendedoraGUI:
 
                 # Asegurar que existan las nuevas claves (migración de config vieja)
                 for d in [self.contadores, self.contadores_apertura, self.contadores_parciales]:
-                    for key in ["fichas_devolucion", "fichas_normales", "fichas_promocion"]:
+                    for key in ["fichas_devolucion", "fichas_normales", "fichas_promocion", "fichas_cambio"]:
                         if key not in d:
                             d[key] = 0
         else:
@@ -708,6 +769,41 @@ class ExpendedoraGUI:
             messagebox.showerror("Error", "Ingrese un valor numérico válido.")
             self.entry_devolucion.focus_set()  # <-- AÑADIR ESTO
 
+    def procesar_cambio_fichas(self):
+        try:
+            cantidad_str = self.entry_cambio.get()
+            if not cantidad_str:
+                self.entry_cambio.focus_set()
+                return
+            
+            cantidad_fichas = int(cantidad_str)
+            if cantidad_fichas <= 0:
+                messagebox.showerror("Error", "La cantidad debe ser mayor a 0.")
+                self.entry_cambio.focus_set()
+                return
+
+            # Actualización optimista
+            current_fichas = self.contadores["fichas_restantes"]
+            self.contadores_labels["fichas_restantes"].config(text=f"Fichas Restantes: {current_fichas + cantidad_fichas}")
+
+            shared_buffer.gui_to_core_queue.put({'type': 'add_fichas', 'cantidad': cantidad_fichas})
+
+            # Actualizar contadores de cambio
+            self.contadores["fichas_cambio"] += cantidad_fichas
+            self.contadores_apertura["fichas_cambio"] += cantidad_fichas
+            self.contadores_parciales["fichas_cambio"] += cantidad_fichas
+
+            self.guardar_configuracion()
+            
+            if "fichas_cambio" in self.contadores_labels:
+                self.contadores_labels["fichas_cambio"].config(text=f"{self.contadores['fichas_cambio']}")
+
+            self.entry_cambio.delete(0, tk.END)
+            self.entry_cambio.focus_set()
+            
+        except ValueError:
+            messagebox.showerror("Error", "Ingrese un valor numérico válido.")
+            self.entry_cambio.focus_set()
 
     def realizar_apertura(self):
         # Inicia la apertura del día
@@ -720,7 +816,8 @@ class ExpendedoraGUI:
             "promo3_contador": self.contadores_apertura['promo3_contador'],
             "fichas_devolucion": self.contadores_apertura['fichas_devolucion'],
             "fichas_normales": self.contadores_apertura['fichas_normales'],
-            "fichas_promocion": self.contadores_apertura['fichas_promocion']
+            "fichas_promocion": self.contadores_apertura['fichas_promocion'],
+            "fichas_cambio": self.contadores_apertura['fichas_cambio']
         }
         
         # Insertar cierre inicial con todo en 0 para registrar el día
@@ -733,7 +830,8 @@ class ExpendedoraGUI:
             "promo3_contador": self.contadores_apertura['promo3_contador'],
             "fichas_devolucion": self.contadores_apertura['fichas_devolucion'],
             "fichas_normales": self.contadores_apertura['fichas_normales'],
-            "fichas_promocion": self.contadores_apertura['fichas_promocion']
+            "fichas_promocion": self.contadores_apertura['fichas_promocion'],
+            "fichas_cambio": self.contadores_apertura['fichas_cambio']
         }
         
         # Enviar cierre inicial al servidor remoto
@@ -771,7 +869,8 @@ class ExpendedoraGUI:
             "promo3_contador": self.contadores_apertura['promo3_contador'],
             "fichas_devolucion": self.contadores_apertura['fichas_devolucion'],
             "fichas_normales": self.contadores_apertura['fichas_normales'],
-            "fichas_promocion": self.contadores_apertura['fichas_promocion']
+            "fichas_promocion": self.contadores_apertura['fichas_promocion'],
+            "fichas_cambio": self.contadores_apertura['fichas_cambio']
         }
         mensaje_cierre = (
             f"Fichas expendidas: {cierre_info['fichas_expendidas']}\n"
@@ -780,7 +879,7 @@ class ExpendedoraGUI:
             f"Promo 2 usadas: {cierre_info['promo2_contador']}\n"
             f"Promo 3 usadas: {cierre_info['promo3_contador']}\n"
             f"--- Desglose ---\n"
-            f"Vendidas: {cierre_info['fichas_normales']} | Promoción: {cierre_info['fichas_promocion']} | Devolución: {cierre_info['fichas_devolucion']}"
+            f"Vendidas: {cierre_info['fichas_normales']} | Promoción: {cierre_info['fichas_promocion']} | Devolución: {cierre_info['fichas_devolucion']} | Cambio: {cierre_info['fichas_cambio']}"
         )
         messagebox.showinfo("Cierre", f"Cierre del día realizado:\n{mensaje_cierre}")
         
@@ -830,7 +929,8 @@ class ExpendedoraGUI:
             "fichas_restantes": 0,
             "fichas_devolucion": 0,
             "fichas_normales": 0,
-            "fichas_promocion": 0
+            "fichas_promocion": 0,
+            "fichas_cambio": 0
         }
 
         self.contadores_apertura = {
@@ -842,7 +942,8 @@ class ExpendedoraGUI:
             "fichas_restantes": 0,
             "fichas_devolucion": 0,
             "fichas_normales": 0,
-            "fichas_promocion": 0
+            "fichas_promocion": 0,
+            "fichas_cambio": 0
         }
         self.contadores_parciales = {
             "fichas_expendidas": 0,
@@ -853,7 +954,8 @@ class ExpendedoraGUI:
             "fichas_restantes": 0,
             "fichas_devolucion": 0,
             "fichas_normales": 0,
-            "fichas_promocion": 0
+            "fichas_promocion": 0,
+            "fichas_cambio": 0
         }
         
         # Marcar que se realizó un cierre para evitar doble reporte en cerrar_sesion
@@ -873,6 +975,7 @@ class ExpendedoraGUI:
             "partial_devolucion": self.contadores_parciales['fichas_devolucion'],
             "partial_normales": self.contadores_parciales['fichas_normales'],
             "partial_promocion": self.contadores_parciales['fichas_promocion'],
+            "partial_cambio": self.contadores_parciales['fichas_cambio'],
             "employee_id": self.username
         }
 
@@ -882,7 +985,8 @@ class ExpendedoraGUI:
             f"Promo 1 usadas: {subcierre_info['partial_p1']}\n"
             f"Promo 2 usadas: {subcierre_info['partial_p2']}\n"
             f"Promo 3 usadas: {subcierre_info['partial_p3']}\n"
-            f"Devoluciones: {subcierre_info['partial_devolucion']}"
+            f"Devoluciones: {subcierre_info['partial_devolucion']}\n"
+            f"Cambio: {subcierre_info['partial_cambio']}"
         )
         messagebox.showinfo("Cierre Parcial", f"Cierre parcial realizado:\n{mensaje_subcierre}")
 
@@ -929,7 +1033,8 @@ class ExpendedoraGUI:
             "fichas_restantes": 0,
             "fichas_devolucion": 0,
             "fichas_normales": 0,
-            "fichas_promocion": 0
+            "fichas_promocion": 0,
+            "fichas_cambio": 0
         }
         self.guardar_configuracion()
 
@@ -947,7 +1052,8 @@ class ExpendedoraGUI:
                 "promo3_contador": 0,
                 "fichas_devolucion": 0,
                 "fichas_normales": 0,
-                "fichas_promocion": 0
+                "fichas_promocion": 0,
+                "fichas_cambio": 0
             })
             print("[GUI] Usando contadores pre-cierre para subcierre")
         else:
@@ -962,7 +1068,8 @@ class ExpendedoraGUI:
             contadores_a_enviar['promo1_contador'] > 0 or
             contadores_a_enviar['promo2_contador'] > 0 or
             contadores_a_enviar['promo3_contador'] > 0 or
-            contadores_a_enviar['fichas_devolucion'] > 0
+            contadores_a_enviar['fichas_devolucion'] > 0 or
+            contadores_a_enviar['fichas_cambio'] > 0
         )
         
         if tiene_datos:
@@ -976,6 +1083,7 @@ class ExpendedoraGUI:
                 "partial_devolucion": contadores_a_enviar['fichas_devolucion'],
                 "partial_normales": contadores_a_enviar['fichas_normales'],
                 "partial_promocion": contadores_a_enviar['fichas_promocion'],
+                "partial_cambio": contadores_a_enviar['fichas_cambio'],
                 "employee_id": self.username
             }
 
@@ -1024,7 +1132,8 @@ class ExpendedoraGUI:
             "fichas_restantes": 0,
             "fichas_devolucion": 0,
             "fichas_normales": 0,
-            "fichas_promocion": 0
+            "fichas_promocion": 0,
+            "fichas_cambio": 0
         }
         self.contadores_parciales = {
             "fichas_expendidas": 0,
@@ -1035,7 +1144,8 @@ class ExpendedoraGUI:
             "fichas_restantes": 0,
             "fichas_devolucion": 0,
             "fichas_normales": 0,
-            "fichas_promocion": 0
+            "fichas_promocion": 0,
+            "fichas_cambio": 0
         }
         
         # Reiniciar contadores en el buffer compartido para asegurar coherencia
