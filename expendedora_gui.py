@@ -97,10 +97,15 @@ class ExpendedoraGUI:
         # Flag para controlar si se realizó un cierre del día
         self.cierre_realizado = False
         self.contadores_parciales_pre_cierre = {}
-
+        
         # Archivo de configuración
         self.config_file = "config.json"
         self.cargar_configuracion()
+        
+        # Inicializar bases para contadores (Modelo: Base + Sesión)
+        self.inicio_fichas_expendidas = self.contadores["fichas_expendidas"]
+        self.inicio_apertura_fichas = self.contadores_apertura["fichas_expendidas"]
+        self.inicio_parcial_fichas = self.contadores_parciales["fichas_expendidas"]
         
         # Configuración de Scroll Global
         self.current_canvas = None
@@ -115,9 +120,6 @@ class ExpendedoraGUI:
         self.root.bind_all("<Button-4>", _on_mousewheel)
         self.root.bind_all("<Button-5>", _on_mousewheel)
         
-        # Asegurar que el contador de sesión inicie en 0 (para coincidir con el dinero y hardware)
-        self.contadores["fichas_expendidas"] = 0
-
         # Registrar función de actualización con el core
         core.registrar_gui_actualizar(self.sincronizar_desde_core)
         core.registrar_gui_alerta_motor(self.mostrar_alerta_motor_trabado)
@@ -531,15 +533,16 @@ class ExpendedoraGUI:
             fichas_restantes_hw = shared_buffer.get_fichas_restantes()
             fichas_expendidas_hw = shared_buffer.get_fichas_expendidas()
 
-            # 1. Sincronizar fichas expendidas si han aumentado
-            diferencia_expendidas = fichas_expendidas_hw - self.contadores["fichas_expendidas"]
-            if diferencia_expendidas > 0:
-                self.contadores["fichas_expendidas"] = fichas_expendidas_hw
-                self.contadores_apertura["fichas_expendidas"] += diferencia_expendidas
-                self.contadores_parciales["fichas_expendidas"] += diferencia_expendidas
-                # print(f"[GUI] ✓ FICHAS EXPENDIDAS | Total: {fichas_expendidas_hw} | +{diferencia_expendidas}")
+            # 1. Sincronizar fichas expendidas (Modelo: Base + Sesión)
+            nuevo_total = self.inicio_fichas_expendidas + fichas_expendidas_hw
+            
+            if nuevo_total != self.contadores["fichas_expendidas"]:
+                self.contadores["fichas_expendidas"] = nuevo_total
+                self.contadores_apertura["fichas_expendidas"] = self.inicio_apertura_fichas + fichas_expendidas_hw
+                self.contadores_parciales["fichas_expendidas"] = self.inicio_parcial_fichas + fichas_expendidas_hw
                 self.actualizar_contadores_gui()
-
+                self.guardar_configuracion()
+                
             # 2. Sincronizar fichas restantes si han cambiado (independientemente de las expendidas)
             #    Esto cubre tanto la adición de fichas como el decremento al expender.
             if fichas_restantes_hw != self.contadores["fichas_restantes"]:
@@ -864,9 +867,9 @@ class ExpendedoraGUI:
             "id_expendedora": self.device_id,
             "fichas_expendidas": self.contadores_apertura['fichas_expendidas'],
             "dinero_ingresado": self.contadores_apertura['dinero_ingresado'],
-            "promo1_contador": self.contadores_apertura['promo1_contador'],
-            "promo2_contador": self.contadores_apertura['promo2_contador'],
-            "promo3_contador": self.contadores_apertura['promo3_contador'],
+            "p1": self.contadores_apertura['promo1_contador'],
+            "p2": self.contadores_apertura['promo2_contador'],
+            "p3": self.contadores_apertura['promo3_contador'],
             "fichas_devolucion": self.contadores_apertura['fichas_devolucion'],
             "fichas_normales": self.contadores_apertura['fichas_normales'],
             "fichas_promocion": self.contadores_apertura['fichas_promocion'],
@@ -958,6 +961,12 @@ class ExpendedoraGUI:
             "fichas_cambio": 0
         }
         
+        # Ajustar bases para que coincidan con el reset (Base = 0 - HW_Actual)
+        hw_actual = shared_buffer.get_fichas_expendidas()
+        self.inicio_fichas_expendidas = -hw_actual
+        self.inicio_apertura_fichas = -hw_actual
+        self.inicio_parcial_fichas = -hw_actual
+        
         # Marcar que se realizó un cierre para evitar doble reporte en cerrar_sesion
         self.cierre_realizado = True
         
@@ -1036,6 +1045,11 @@ class ExpendedoraGUI:
             "fichas_promocion": 0,
             "fichas_cambio": 0
         }
+        
+        # Ajustar base parcial
+        hw_actual = shared_buffer.get_fichas_expendidas()
+        self.inicio_parcial_fichas = -hw_actual
+        
         self.guardar_configuracion()
 
     def cerrar_sesion(self):
