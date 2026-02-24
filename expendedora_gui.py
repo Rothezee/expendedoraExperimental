@@ -867,14 +867,16 @@ class ExpendedoraGUI:
             "id_expendedora": self.device_id,
             "fichas_expendidas": self.contadores_apertura['fichas_expendidas'],
             "dinero_ingresado": self.contadores_apertura['dinero_ingresado'],
-            "p1": self.contadores_apertura['promo1_contador'],
-            "p2": self.contadores_apertura['promo2_contador'],
-            "p3": self.contadores_apertura['promo3_contador'],
+            "promo1_contador": self.contadores_apertura['promo1_contador'],
+            "promo2_contador": self.contadores_apertura['promo2_contador'],
+            "promo3_contador": self.contadores_apertura['promo3_contador'],
             "fichas_devolucion": self.contadores_apertura['fichas_devolucion'],
             "fichas_normales": self.contadores_apertura['fichas_normales'],
             "fichas_promocion": self.contadores_apertura['fichas_promocion'],
             "fichas_cambio": self.contadores_apertura['fichas_cambio']
         }
+        # Actualizamos el device_id en el diccionario existente en lugar de recrearlo
+        self.contadores_apertura["device_id"] = self.device_id
         mensaje_cierre = (
             f"Fichas expendidas: {cierre_info['fichas_expendidas']}\n"
             f"Dinero ingresado: ${cierre_info['dinero_ingresado']:.2f}\n"
