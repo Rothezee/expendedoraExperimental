@@ -653,6 +653,8 @@ class ExpendedoraGUI:
         }
         with open(self.config_file, 'w') as f:
             json.dump(config, f, indent=4)
+        # Actualizar el caché del core para que valor_ficha sea consistente
+        core._actualizar_cache_config()
 
     def configurar_promo(self, promo):
         config_window = tk.Toplevel(self.root)
