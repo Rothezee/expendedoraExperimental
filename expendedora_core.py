@@ -11,6 +11,47 @@ import shared_buffer
 config_file = "config.json"
 registro_file = "registro.json"
 
+# --- ESCRITURA A DISCO CON DEBOUNCE ---
+# Evita escribir registro.json en cada ficha (costoso en SD card).
+# Acumula cambios y escribe UNA sola vez después de 2 segundos de inactividad.
+_registro_pendiente = {}
+_registro_lock = threading.Lock()
+_registro_timer = None
+
+def _flush_registro():
+    """Escribe el registro acumulado al disco (llamado por el timer)."""
+    global _registro_pendiente, _registro_timer
+    with _registro_lock:
+        if _registro_pendiente:
+            if os.path.exists(registro_file):
+                with open(registro_file, 'r') as f:
+                    registro = json.load(f)
+            else:
+                registro = iniciar_apertura.__wrapped__() if hasattr(iniciar_apertura, '__wrapped__') else {
+                    "apertura": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    "fichas_expendidas": 0, "dinero_ingresado": 0,
+                    "promociones_usadas": {"Promo 1": 0, "Promo 2": 0, "Promo 3": 0}
+                }
+            registro["fichas_expendidas"] += _registro_pendiente.get("fichas", 0)
+            registro["dinero_ingresado"] += _registro_pendiente.get("dinero", 0)
+            for promo, qty in _registro_pendiente.get("promos", {}).items():
+                registro["promociones_usadas"][promo] += qty
+            with open(registro_file, 'w') as f:
+                json.dump(registro, f, indent=4)
+            print(f"[REGISTRO] Guardado: +{_registro_pendiente.get('fichas',0)} fichas, +{_registro_pendiente.get('dinero',0):.2f} dinero")
+            _registro_pendiente = {}
+        _registro_timer = None
+
+def _programar_flush_registro():
+    """Cancela el timer anterior y programa uno nuevo (debounce 2s)."""
+    global _registro_timer
+    with _registro_lock:
+        if _registro_timer is not None:
+            _registro_timer.cancel()
+        _registro_timer = threading.Timer(2.0, _flush_registro)
+        _registro_timer.daemon = True
+        _registro_timer.start()
+
 #GPIO.setwarnings(False) descomentar para usar en hardware real
 
 # --- CONFIGURACIÓN DE PINES ---
@@ -113,14 +154,18 @@ def guardar_registro(registro):
         json.dump(registro, f, indent=4)
 
 def actualizar_registro(tipo, cantidad):
-    registro = cargar_registro()
-    if tipo == "ficha":
-        registro["fichas_expendidas"] += cantidad
-        registro["dinero_ingresado"] += cantidad * cargar_configuracion()["valor_ficha"]
-    elif tipo in ["Promo 1", "Promo 2", "Promo 3"]:
-        registro["promociones_usadas"][tipo] += 1
-        registro["dinero_ingresado"] += cargar_configuracion()["promociones"][tipo]["precio"]
-    guardar_registro(registro)
+    """Acumula cambios en memoria y escribe al disco con debounce (2s de inactividad)."""
+    global _registro_pendiente
+    config = cargar_configuracion()
+    with _registro_lock:
+        if tipo == "ficha":
+            _registro_pendiente["fichas"] = _registro_pendiente.get("fichas", 0) + cantidad
+            _registro_pendiente["dinero"] = _registro_pendiente.get("dinero", 0) + cantidad * config.get("valor_ficha", 1.0)
+        elif tipo in ["Promo 1", "Promo 2", "Promo 3"]:
+            promos = _registro_pendiente.setdefault("promos", {})
+            promos[tipo] = promos.get(tipo, 0) + 1
+            _registro_pendiente["dinero"] = _registro_pendiente.get("dinero", 0) + config.get("promociones", {}).get(tipo, {}).get("precio", 0)
+    _programar_flush_registro()
 
 def realizar_cierre():
     registro = cargar_registro()
@@ -184,16 +229,16 @@ def enviar_datos_venta_servidor():
     }
     try:
         # Usamos la URL de datos generales para reportar la venta
-        response = requests.post(DNSLocal + url, json=datos)
+        response = requests.post(DNSLocal + url, json=datos, timeout=5)
         # print(f"[REPORTE VENTA] Datos de venta enviados. Respuesta: {response.status_code}")
     except requests.RequestException as e:
-        print(f"[ERROR REPORTE VENTA] No se pudo enviar el reporte de venta: {e}")
+        print(f"[ERROR REPORTE VENTA] No se pudo enviar el reporte de venta (local): {e}")
 
     try:
         # Usamos la URL de datos generales para reportar la venta
-        response = requests.post(DNS + url, json=datos)
+        response = requests.post(DNS + url, json=datos, timeout=5)
     except requests.RequestException as e:
-        print(f"[ERROR REPORTE VENTA] No se pudo enviar el reporte de venta: {e}")
+        print(f"[ERROR REPORTE VENTA] No se pudo enviar el reporte de venta (remoto): {e}")
 
 # --- ENVÍO DE DATOS AL SERVIDOR ---
 def enviar_pulso():
@@ -201,7 +246,7 @@ def enviar_pulso():
     device_id = config.get("device_id")
     data = {"device_id": device_id}
     try:
-        response = requests.post(SERVER_HEARTBEAT, json=data)
+        response = requests.post(SERVER_HEARTBEAT, json=data, timeout=5)
         # print("Heartbeat enviado:", response.text)
     except requests.RequestException as e:
         print("Error enviando heartbeat:", e)
@@ -294,8 +339,8 @@ def controlar_motor():
                 shared_buffer.set_motor_activo(False)
                 motor_con_timeout_activo = False
                 print("[MOTOR OFF] Todas las fichas expendidas")
-                # Enviar reporte de la venta que acaba de terminar
-                enviar_datos_venta_servidor()
+                # Enviar reporte en hilo separado para no bloquear el loop del motor
+                threading.Thread(target=enviar_datos_venta_servidor, daemon=True).start()
 
         # Leer estado actual del sensor
         estado_actual_sensor = GPIO.input(ENTHOPER)
@@ -391,6 +436,7 @@ def iniciar_sistema():
 
 def detener_sistema():
     """Apaga el motor y limpia GPIO"""
+    _flush_registro()  # Asegurar que no queden datos sin guardar
     GPIO.output(MOTOR_PIN, GPIO.LOW)
     GPIO.cleanup()
     print("Sistema detenido")
