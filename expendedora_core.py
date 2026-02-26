@@ -63,7 +63,7 @@ PULSO_MIN = 0.05  # Duración mínima del pulso (50ms) - filtro de ruido
 PULSO_MAX = 0.5   # Duración máxima del pulso (500ms) - filtro de bloqueos
 
 # --- CONFIGURACIÓN DE PROTECCIÓN DEL MOTOR ---
-TIMEOUT_MOTOR = 2.0  # 2 segundos máximo sin dispensar ficha (PROTECCIÓN ANTI-QUEMADO)
+TIMEOUT_MOTOR = 3.0  # 3 segundos máximo sin dispensar ficha (PROTECCIÓN ANTI-QUEMADO)
 
 # --- CONFIGURACIÓN DE LA BASE DE DATOS ---
 DB_FILE = "expendedora.db"
@@ -440,3 +440,4 @@ def detener_sistema():
     GPIO.output(MOTOR_PIN, GPIO.LOW)
     GPIO.cleanup()
     print("Sistema detenido")
+
