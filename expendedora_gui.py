@@ -14,6 +14,21 @@ urlSubcierre = "esp32_project/expendedora/insert_subcierre_expendedora.php"  # U
 DNS = "https://maquinasbonus.com/"  # DNS servidor
 DNSLocal = "http://127.0.0.1/"  # DNS servidor local
 
+import threading as _threading
+
+def _post_en_hilo(url, datos, descripcion=""):
+    """
+    Envía un POST HTTP en un hilo separado con timeout.
+    Nunca bloquea el hilo de Tkinter aunque no haya internet.
+    """
+    def _enviar():
+        try:
+            resp = requests.post(url, json=datos, timeout=5)
+            print(f"[NET] {descripcion} → {resp.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"[NET ERROR] {descripcion}: {e}")
+    _threading.Thread(target=_enviar, daemon=True).start()
+
 class ExpendedoraGUI:
     def __init__(self, root, username):
         self.root = root
@@ -97,6 +112,10 @@ class ExpendedoraGUI:
         # Flag para controlar si se realizó un cierre del día
         self.cierre_realizado = False
         self.contadores_parciales_pre_cierre = {}
+        
+        # --- ANTI-FLOOD: evita encolar root.after duplicados y guardar config en cada ficha ---
+        self._after_sincronizar_pendiente = False  # True si ya hay un callback en cola
+        self._guardar_config_timer = None          # Timer para debounce de guardar_configuracion
         
         # Archivo de configuración
         self.config_file = "config.json"
@@ -527,8 +546,16 @@ class ExpendedoraGUI:
         Llamada por el core cuando cambian los contadores.
         Lee directamente los valores actuales y actualiza la GUI.
         Se ejecuta en el hilo del core, usa root.after() para thread-safety.
+        El flag _after_sincronizar_pendiente evita encolar múltiples callbacks
+        si el motor dispensa fichas más rápido de lo que Tkinter las procesa.
         """
+        # Si ya hay un callback pendiente en la cola de Tkinter, no encolar otro
+        if self._after_sincronizar_pendiente:
+            return
+        
         def _actualizar():
+            self._after_sincronizar_pendiente = False  # Liberar el flag
+            
             # Leer valores actuales del core (thread-safe)
             fichas_restantes_hw = shared_buffer.get_fichas_restantes()
             fichas_expendidas_hw = shared_buffer.get_fichas_expendidas()
@@ -541,20 +568,18 @@ class ExpendedoraGUI:
                 self.contadores_apertura["fichas_expendidas"] = self.inicio_apertura_fichas + fichas_expendidas_hw
                 self.contadores_parciales["fichas_expendidas"] = self.inicio_parcial_fichas + fichas_expendidas_hw
                 self.actualizar_contadores_gui()
-                self.guardar_configuracion()
+                self.guardar_configuracion()  # Debounced: no escribe en cada ficha
                 
-            # 2. Sincronizar fichas restantes si han cambiado (independientemente de las expendidas)
-            #    Esto cubre tanto la adición de fichas como el decremento al expender.
+            # 2. Sincronizar fichas restantes si han cambiado
             if fichas_restantes_hw != self.contadores["fichas_restantes"]:
                 self.contadores["fichas_restantes"] = fichas_restantes_hw
-                # print(f"[GUI] ✓ FICHAS RESTANTES | Nuevo valor: {fichas_restantes_hw}")
                 self.actualizar_contadores_gui()
 
-        # Programar actualización en el hilo de Tkinter
         try:
+            self._after_sincronizar_pendiente = True
             self.root.after(0, _actualizar)
         except:
-            # Si after() no funciona, ejecutar directamente
+            self._after_sincronizar_pendiente = False
             _actualizar()
 
     def mostrar_alerta_motor_trabado(self, fichas_pendientes):
@@ -597,9 +622,27 @@ class ExpendedoraGUI:
                         if key not in d:
                             d[key] = 0
         else:
-            self.guardar_configuracion()
+            self.guardar_configuracion(inmediato=True)
 
-    def guardar_configuracion(self):
+    def guardar_configuracion(self, inmediato=False):
+        """
+        Guarda config.json con debounce: espera 1.5s de inactividad antes de escribir.
+        Usar inmediato=True solo cuando sea estrictamente necesario (cierre, sesión).
+        Evita escribir a disco en cada ficha dispensada (muy costoso en SD card).
+        """
+        if inmediato:
+            self._escribir_config_ahora()
+            return
+        # Cancelar timer anterior y arrancar uno nuevo (debounce 1.5s)
+        if self._guardar_config_timer is not None:
+            self._guardar_config_timer.cancel()
+        import threading as _t
+        self._guardar_config_timer = _t.Timer(1.5, lambda: self.root.after(0, self._escribir_config_ahora))
+        self._guardar_config_timer.daemon = True
+        self._guardar_config_timer.start()
+
+    def _escribir_config_ahora(self):
+        """Escribe config.json al disco (siempre en el hilo de Tkinter)."""
         config = {
             "promociones": self.promociones,
             "valor_ficha": self.valor_ficha,
@@ -631,7 +674,7 @@ class ExpendedoraGUI:
             try:
                 self.promociones[promo]["precio"] = float(precio_entry.get())
                 self.promociones[promo]["fichas"] = int(fichas_entry.get())
-                self.guardar_configuracion()
+                self.guardar_configuracion(inmediato=True)
                 config_window.destroy()
             except ValueError:
                 messagebox.showerror("Error", "Ingrese valores numéricos válidos.")
@@ -653,7 +696,7 @@ class ExpendedoraGUI:
         def guardar_valor_ficha():
             try:
                 self.valor_ficha = float(valor_entry.get())
-                self.guardar_configuracion()
+                self.guardar_configuracion(inmediato=True)
                 config_window.destroy()
             except ValueError:
                 messagebox.showerror("Error", "Ingrese un valor numérico válido.")
@@ -676,7 +719,7 @@ class ExpendedoraGUI:
             new_id = id_entry.get().strip()
             if new_id:
                 self.device_id = new_id
-                self.guardar_configuracion()
+                self.guardar_configuracion(inmediato=True)
                 config_window.destroy()
             else:
                 messagebox.showerror("Error", "El ID no puede estar vacío.")
@@ -699,7 +742,7 @@ class ExpendedoraGUI:
 
             # Actualiza la GUI de forma optimista
             current_fichas = self.contadores["fichas_restantes"]
-            self.contadores_labels["fichas_restantes"].config(text=f"Fichas Restantes: {current_fichas + cantidad_fichas}")
+            self.contadores_labels["fichas_restantes"].config(text=f"{current_fichas + cantidad_fichas}")
 
             # Enviar comando al core
             shared_buffer.gui_to_core_queue.put({'type': 'add_fichas', 'cantidad': cantidad_fichas})
@@ -717,7 +760,7 @@ class ExpendedoraGUI:
             shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"])
 
             self.guardar_configuracion()
-            self.contadores_labels["dinero_ingresado"].config(text=f"Dinero Ingresado: ${self.contadores['dinero_ingresado']:.2f}")
+            self.contadores_labels["dinero_ingresado"].config(text=f"${self.contadores['dinero_ingresado']:.2f}")
             
             # Limpiar el campo de entrada
             self.entry_fichas.delete(0, tk.END)
@@ -745,7 +788,7 @@ class ExpendedoraGUI:
 
             # Actualización optimista
             current_fichas = self.contadores["fichas_restantes"]
-            self.contadores_labels["fichas_restantes"].config(text=f"Fichas Restantes: {current_fichas + cantidad_fichas}")
+            self.contadores_labels["fichas_restantes"].config(text=f"{current_fichas + cantidad_fichas}")
 
             shared_buffer.gui_to_core_queue.put({'type': 'add_fichas', 'cantidad': cantidad_fichas})
 
@@ -787,7 +830,7 @@ class ExpendedoraGUI:
 
             # Actualización optimista
             current_fichas = self.contadores["fichas_restantes"]
-            self.contadores_labels["fichas_restantes"].config(text=f"Fichas Restantes: {current_fichas + cantidad_fichas}")
+            self.contadores_labels["fichas_restantes"].config(text=f"{current_fichas + cantidad_fichas}")
 
             shared_buffer.gui_to_core_queue.put({'type': 'add_fichas', 'cantidad': cantidad_fichas})
 
@@ -837,28 +880,12 @@ class ExpendedoraGUI:
             "fichas_cambio": self.contadores_apertura['fichas_cambio']
         }
         
-        # Enviar cierre inicial al servidor remoto
-        try:
-            response = requests.post(DNS + urlCierres, json=cierre_inicial)
-            if response.status_code == 200:
-                print("Cierre inicial (apertura) enviado con éxito al servidor remoto")
-            else:
-                print(f"Error al enviar cierre inicial al servidor remoto: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error al conectar con el servidor remoto: {e}")
-        
-        # Enviar cierre inicial al servidor local
-        try:
-            response = requests.post(DNSLocal + urlCierres, json=cierre_inicial)
-            if response.status_code == 200:
-                print("Cierre inicial (apertura) enviado con éxito al servidor local")
-            else:
-                print(f"Error al enviar cierre inicial al servidor local: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error al conectar con el servidor local: {e}")
+        # Enviar cierre inicial al servidor remoto y local (no bloquea la GUI)
+        _post_en_hilo(DNS + urlCierres, cierre_inicial, "Apertura remota")
+        _post_en_hilo(DNSLocal + urlCierres, cierre_inicial, "Apertura local")
         
         self.actualizar_contadores_gui()
-        self.guardar_configuracion()
+        self.guardar_configuracion(inmediato=True)
         messagebox.showinfo("Apertura", "Apertura del día realizada con éxito.\nRegistro inicial creado en el sistema.")
 
     def realizar_cierre(self):
@@ -888,38 +915,9 @@ class ExpendedoraGUI:
         )
         messagebox.showinfo("Cierre", f"Cierre del día realizado:\n{mensaje_cierre}")
         
-        # Enviar datos al servidor
-        try:
-            response = requests.post(DNS + urlCierres, json=cierre_info)
-            if response.status_code == 200:
-                try:
-                    resp_json = response.json()
-                    if "error" in resp_json:
-                        print(f"Error del servidor (Remoto): {resp_json['error']}")
-                    else:
-                        print("Datos de cierre enviados con éxito")
-                except:
-                    print("Datos de cierre enviados (Respuesta no JSON)")
-            else:
-                print(f"Error al enviar datos de cierre: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error al conectar con el servidor: {e}")
-
-        try:
-            response = requests.post(DNSLocal + urlCierres, json=cierre_info)
-            if response.status_code == 200:
-                try:
-                    resp_json = response.json()
-                    if "error" in resp_json:
-                        print(f"Error del servidor (Local): {resp_json['error']}")
-                    else:
-                        print("Datos de cierre enviados con éxito")
-                except:
-                    print("Datos de cierre enviados (Respuesta no JSON)")
-            else:
-                print(f"Error al enviar datos de cierre: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error al conectar con el servidor: {e}")    
+        # Enviar datos al servidor (no bloquea la GUI)
+        _post_en_hilo(DNS + urlCierres, cierre_info, "Cierre remoto")
+        _post_en_hilo(DNSLocal + urlCierres, cierre_info, "Cierre local")
         
         # IMPORTANTE: Guardar los contadores parciales ANTES de resetear
         # para que el subcierre tenga los datos correctos
@@ -972,7 +970,7 @@ class ExpendedoraGUI:
         # Marcar que se realizó un cierre para evitar doble reporte en cerrar_sesion
         self.cierre_realizado = True
         
-        self.guardar_configuracion()
+        self.guardar_configuracion(inmediato=True)
 
     def realizar_cierre_parcial(self):
         # Realiza el cierre parcial
@@ -1001,38 +999,9 @@ class ExpendedoraGUI:
         )
         messagebox.showinfo("Cierre Parcial", f"Cierre parcial realizado:\n{mensaje_subcierre}")
 
-        # Enviar datos al servidor
-        try:
-            response = requests.post(DNS + urlSubcierre, json=subcierre_info)
-            if response.status_code == 200:
-                try:
-                    resp_json = response.json()
-                    if "error" in resp_json:
-                        print(f"Error del servidor (Remoto): {resp_json['error']}")
-                    else:
-                        print("Datos de cierre parcial enviados con éxito")
-                except:
-                    print("Datos de cierre parcial enviados (Respuesta no JSON)")
-            else:
-                print(f"Error al enviar datos de cierre parcial: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error al conectar con el servidor: {e}")
-
-        try:
-            response = requests.post(DNSLocal + urlSubcierre, json=subcierre_info)
-            if response.status_code == 200:
-                try:
-                    resp_json = response.json()
-                    if "error" in resp_json:
-                        print(f"Error del servidor (Local): {resp_json['error']}")
-                    else:
-                        print("Datos de cierre parcial enviados con éxito")
-                except:
-                    print("Datos de cierre parcial enviados (Respuesta no JSON)")
-            else:
-                print(f"Error al enviar datos de cierre parcial: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error al conectar con el servidor: {e}")
+        # Enviar datos al servidor (no bloquea la GUI)
+        _post_en_hilo(DNS + urlSubcierre, subcierre_info, "Subcierre remoto")
+        _post_en_hilo(DNSLocal + urlSubcierre, subcierre_info, "Subcierre local")
 
         # Reiniciar los contadores parciales
         self.contadores_parciales = {
@@ -1052,7 +1021,7 @@ class ExpendedoraGUI:
         hw_actual = shared_buffer.get_fichas_expendidas()
         self.inicio_parcial_fichas = -hw_actual
         
-        self.guardar_configuracion()
+        self.guardar_configuracion(inmediato=True)
 
     def cerrar_sesion(self):
         # Determinar qué contadores usar para el subcierre
@@ -1103,38 +1072,9 @@ class ExpendedoraGUI:
                 "employee_id": self.username
             }
 
-            # Enviar datos al servidor
-            try:
-                response = requests.post(DNS + urlSubcierre, json=Subcierre_info)
-                if response.status_code == 200:
-                    try:
-                        resp_json = response.json()
-                        if "error" in resp_json:
-                            print(f"Error del servidor (Remoto): {resp_json['error']}")
-                        else:
-                            print("Datos de cierre parcial enviados con éxito")
-                    except:
-                        print("Datos de cierre parcial enviados (Respuesta no JSON)")
-                else:
-                    print(f"Error al enviar datos de cierre parcial: {response.status_code}")
-            except requests.exceptions.RequestException as e:
-                print(f"Error al conectar con el servidor: {e}")
-
-            try:
-                response = requests.post(DNSLocal + urlSubcierre, json=Subcierre_info)
-                if response.status_code == 200:
-                    try:
-                        resp_json = response.json()
-                        if "error" in resp_json:
-                            print(f"Error del servidor (Local): {resp_json['error']}")
-                        else:
-                            print("Datos de cierre parcial enviados con éxito")
-                    except:
-                        print("Datos de cierre parcial enviados (Respuesta no JSON)")
-                else:
-                    print(f"Error al enviar datos de cierre parcial: {response.status_code}")
-            except requests.exceptions.RequestException as e:
-                print(f"Error al conectar con el servidor: {e}")
+            # Enviar datos al servidor (no bloquea la GUI)
+            _post_en_hilo(DNS + urlSubcierre, Subcierre_info, "Cierre sesion remoto")
+            _post_en_hilo(DNSLocal + urlSubcierre, Subcierre_info, "Cierre sesion local")
         else:
             print("[GUI] No hay datos para enviar en el subcierre")
 
@@ -1170,7 +1110,7 @@ class ExpendedoraGUI:
         
         # Actualizar la GUI con los contadores en cero ANTES de guardar
         self.actualizar_contadores_gui()
-        self.guardar_configuracion()
+        self.guardar_configuracion(inmediato=True)
 
         messagebox.showinfo("Cerrar Sesión", "La sesión ha sido cerrada.")
         self.root.destroy()
@@ -1239,7 +1179,7 @@ class ExpendedoraGUI:
         self.contadores_apertura["fichas_promocion"] += fichas
         self.contadores_parciales["fichas_promocion"] += fichas
 
-        self.contadores_labels["dinero_ingresado"].config(text=f"Dinero ingresado: ${self.contadores['dinero_ingresado']:.2f}")
+        self.contadores_labels["dinero_ingresado"].config(text=f"${self.contadores['dinero_ingresado']:.2f}")
 
         # **SOLUCIÓN**: Actualizar el buffer compartido para que el core lo vea
         shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"])
@@ -1261,8 +1201,8 @@ class ExpendedoraGUI:
             messagebox.showerror("Error", "Promoción no válida.")
 
         self.actualizar_contadores_gui()
-        self.guardar_configuracion()
-
+        self.guardar_configuracion(inmediato=True)
+        
     def actualizar_fecha_hora(self):
         # Obtener la fecha y hora actual
         now = datetime.now()
