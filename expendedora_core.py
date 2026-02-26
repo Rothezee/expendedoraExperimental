@@ -11,21 +11,6 @@ import shared_buffer
 config_file = "config.json"
 registro_file = "registro.json"
 
-# --- CACHÉ DE CONFIGURACIÓN ---
-# valor_ficha se cachea en memoria para evitar leer config.json desde el loop del motor.
-# Leer del disco en cada ficha puede causar JSONDecodeError si el GUI escribe al mismo tiempo,
-# lo que mataría silenciosamente el hilo del motor.
-_valor_ficha_cache = 1.0
-
-def _actualizar_cache_config():
-    """Actualiza el caché de configuración desde disco. Llamar al inicio y al guardar config."""
-    global _valor_ficha_cache
-    try:
-        cfg = cargar_configuracion()
-        _valor_ficha_cache = cfg.get("valor_ficha", 1.0)
-    except Exception as e:
-        print(f"[CORE] Aviso: no se pudo actualizar caché de config: {e}")
-
 # --- ESCRITURA A DISCO CON DEBOUNCE ---
 # Evita escribir registro.json en cada ficha (costoso en SD card).
 # Acumula cambios y escribe UNA sola vez después de 2 segundos de inactividad.
@@ -39,17 +24,10 @@ def _flush_registro():
     with _registro_lock:
         if _registro_pendiente:
             if os.path.exists(registro_file):
-                try:
-                    with open(registro_file, 'r') as f:
-                        registro = json.load(f)
-                except Exception:
-                    registro = {
-                        "apertura": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        "fichas_expendidas": 0, "dinero_ingresado": 0,
-                        "promociones_usadas": {"Promo 1": 0, "Promo 2": 0, "Promo 3": 0}
-                    }
+                with open(registro_file, 'r') as f:
+                    registro = json.load(f)
             else:
-                registro = {
+                registro = iniciar_apertura.__wrapped__() if hasattr(iniciar_apertura, '__wrapped__') else {
                     "apertura": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     "fichas_expendidas": 0, "dinero_ingresado": 0,
                     "promociones_usadas": {"Promo 1": 0, "Promo 2": 0, "Promo 3": 0}
@@ -57,14 +35,10 @@ def _flush_registro():
             registro["fichas_expendidas"] += _registro_pendiente.get("fichas", 0)
             registro["dinero_ingresado"] += _registro_pendiente.get("dinero", 0)
             for promo, qty in _registro_pendiente.get("promos", {}).items():
-                if promo in registro["promociones_usadas"]:
-                    registro["promociones_usadas"][promo] += qty
-            try:
-                with open(registro_file, 'w') as f:
-                    json.dump(registro, f, indent=4)
-                print(f"[REGISTRO] Guardado: +{_registro_pendiente.get('fichas',0)} fichas, +{_registro_pendiente.get('dinero',0):.2f} dinero")
-            except Exception as e:
-                print(f"[REGISTRO] Error al escribir: {e}")
+                registro["promociones_usadas"][promo] += qty
+            with open(registro_file, 'w') as f:
+                json.dump(registro, f, indent=4)
+            print(f"[REGISTRO] Guardado: +{_registro_pendiente.get('fichas',0)} fichas, +{_registro_pendiente.get('dinero',0):.2f} dinero")
             _registro_pendiente = {}
         _registro_timer = None
 
@@ -180,17 +154,17 @@ def guardar_registro(registro):
         json.dump(registro, f, indent=4)
 
 def actualizar_registro(tipo, cantidad):
-    """Acumula cambios en memoria y escribe al disco con debounce (2s de inactividad).
-    Usa _valor_ficha_cache para no leer config.json desde el hilo del motor."""
+    """Acumula cambios en memoria y escribe al disco con debounce (2s de inactividad)."""
     global _registro_pendiente
+    config = cargar_configuracion()
     with _registro_lock:
         if tipo == "ficha":
             _registro_pendiente["fichas"] = _registro_pendiente.get("fichas", 0) + cantidad
-            _registro_pendiente["dinero"] = _registro_pendiente.get("dinero", 0) + cantidad * _valor_ficha_cache
+            _registro_pendiente["dinero"] = _registro_pendiente.get("dinero", 0) + cantidad * config.get("valor_ficha", 1.0)
         elif tipo in ["Promo 1", "Promo 2", "Promo 3"]:
             promos = _registro_pendiente.setdefault("promos", {})
             promos[tipo] = promos.get(tipo, 0) + 1
-            # Para promos el precio se calcula al momento del flush, no aquí
+            _registro_pendiente["dinero"] = _registro_pendiente.get("dinero", 0) + config.get("promociones", {}).get(tipo, {}).get("precio", 0)
     _programar_flush_registro()
 
 def realizar_cierre():
@@ -302,6 +276,7 @@ def controlar_motor():
     print("[CORE] Iniciando hilo de control de motor con protección anti-quemado")
 
     while True:
+      try:
         # Procesar comandos desde la GUI
         shared_buffer.process_gui_commands()
 
@@ -310,23 +285,19 @@ def controlar_motor():
             if not shared_buffer.get_motor_activo():
                 GPIO.output(MOTOR_PIN, GPIO.HIGH)
                 shared_buffer.set_motor_activo(True)
-                tiempo_inicio_motor = time.time()  # Iniciar contador de timeout
+                tiempo_inicio_motor = time.time()
                 motor_con_timeout_activo = True
                 print(f"[MOTOR ON] Fichas pendientes: {shared_buffer.get_fichas_restantes()}")
             
-            # ⚠️ PROTECCIÓN: Verificar timeout solo si el motor está activo
             elif motor_con_timeout_activo:
                 tiempo_motor_activo = time.time() - tiempo_inicio_motor
                 if tiempo_motor_activo > TIMEOUT_MOTOR:
-                    # Motor trabado - DETENER INMEDIATAMENTE
                     GPIO.output(MOTOR_PIN, GPIO.LOW)
                     shared_buffer.set_motor_activo(False)
                     motor_con_timeout_activo = False
-                    bloqueo_emergencia = True  # Bloquear motor hasta confirmación de usuario
-                    
+                    bloqueo_emergencia = True
+
                     fichas_pendientes = shared_buffer.get_fichas_restantes()
-                    
-                    # Alertas críticas
                     print("=" * 60)
                     print("⚠️  [EMERGENCIA - MOTOR TRABADO] ⚠️")
                     print("=" * 60)
@@ -341,19 +312,13 @@ def controlar_motor():
                     print("IMPORTANTE: Las fichas NO fueron resetadas para evitar")
                     print("            descuadres en el cierre de caja.")
                     print("=" * 60)
-                    
-                    # NO resetear fichas - mantener el estado para que el cajero pueda corregir
-                    # Si el operador arregla el problema o cambia de hopper, puede presionar el botón de nuevo
-                    # y el motor intentará dispensar las fichas pendientes
-                    
-                    # Notificar a la GUI sobre el error crítico
+
                     if gui_alerta_motor_funcion:
                         try:
                             gui_alerta_motor_funcion(fichas_pendientes)
                         except Exception as e:
                             print(f"[ERROR] GUI alerta motor falló: {e}")
-                    
-                    # Actualizar GUI normalmente también
+
                     if gui_actualizar_funcion:
                         try:
                             gui_actualizar_funcion()
@@ -365,7 +330,6 @@ def controlar_motor():
                 shared_buffer.set_motor_activo(False)
                 motor_con_timeout_activo = False
                 print("[MOTOR OFF] Todas las fichas expendidas")
-                # Enviar reporte en hilo separado para no bloquear el loop del motor
                 threading.Thread(target=enviar_datos_venta_servidor, daemon=True).start()
 
         # Leer estado actual del sensor
@@ -374,26 +338,20 @@ def controlar_motor():
 
         # Máquina de estados para detección de pulso completo
         if not ficha_en_sensor:
-            # Estado: Esperando ficha (sensor en HIGH)
             if estado_anterior_sensor == GPIO.HIGH and estado_actual_sensor == GPIO.LOW:
-                # Flanco descendente detectado - Ficha entrando (CORTADO)
                 ficha_en_sensor = True
                 tiempo_inicio_pulso = tiempo_actual
-                
-                # --- CONTAR AL CORTAR (FLANCO DESCENDENTE) ---
+
                 if shared_buffer.get_fichas_restantes() > 0:
                     shared_buffer.decrementar_fichas_restantes()
-                    # Resetear timeout del motor para dar tiempo a que salga
                     tiempo_inicio_motor = time.time()
                     print(f"✅ [FICHA DETECTADA - CORTADO] Restantes: {shared_buffer.get_fichas_restantes()}")
-                    
-                    # Actualizar registro (try/except: si falla, el motor loop SIGUE funcionando)
+
                     try:
                         actualizar_registro("ficha", 1)
                     except Exception as e:
                         print(f"[ERROR] actualizar_registro falló (motor continúa): {e}")
-                    
-                    # Notificar a la GUI inmediatamente
+
                     if gui_actualizar_funcion:
                         try:
                             gui_actualizar_funcion()
@@ -402,20 +360,27 @@ def controlar_motor():
                 else:
                     print("[ADVERTENCIA] Sensor activado pero contador en 0")
         else:
-            # Estado: Ficha en el sensor (esperando que salga)
             if estado_actual_sensor == GPIO.HIGH:
-                # Flanco ascendente - Ficha salió completamente
                 duracion_pulso = tiempo_actual - tiempo_inicio_pulso
                 ficha_en_sensor = False
 
-                # Solo loguear duración, ya se contó al entrar
                 if duracion_pulso < PULSO_MIN:
                     print(f"[RUIDO POSIBLE] Pulso muy corto: {duracion_pulso*1000:.1f}ms (Ya contada)")
                 elif duracion_pulso > PULSO_MAX:
                     print(f"[ADVERTENCIA] Pulso muy largo: {duracion_pulso*1000:.1f}ms")
 
         estado_anterior_sensor = estado_actual_sensor
-        time.sleep(0.005)  # 5ms de polling - más rápido para mejor detección
+        time.sleep(0.005)
+
+      except Exception as e:
+        # El loop del motor NUNCA debe morir. Cualquier excepción se loga y se continúa.
+        print(f"[MOTOR LOOP ERROR - CONTINUANDO] {type(e).__name__}: {e}")
+        try:
+            GPIO.output(MOTOR_PIN, GPIO.LOW)
+            shared_buffer.set_motor_activo(False)
+        except:
+            pass
+        time.sleep(0.1)
 
 # --- CONVERSIÓN DE DINERO A FICHAS ---
 def convertir_fichas():
@@ -454,7 +419,6 @@ def expender_fichas(cantidad):
 def iniciar_sistema():
     """Inicializa el sistema de control de motor (sin GUI)"""
     init_db()
-    _actualizar_cache_config()  # Cargar valor_ficha al inicio (evita leer disco en el loop)
     enviar_pulso()
 
     # Iniciar hilo de control del motor

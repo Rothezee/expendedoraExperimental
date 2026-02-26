@@ -544,33 +544,28 @@ class ExpendedoraGUI:
     def sincronizar_desde_core(self):
         """
         Llamada por el core cuando cambian los contadores.
-        Lee directamente los valores actuales y actualiza la GUI.
-        Se ejecuta en el hilo del core, usa root.after() para thread-safety.
-        El flag _after_sincronizar_pendiente evita encolar múltiples callbacks
-        si el motor dispensa fichas más rápido de lo que Tkinter las procesa.
+        SIEMPRE usa root.after() para ejecutar en el hilo de Tkinter.
+        NUNCA llama _actualizar() directamente desde el hilo del motor
+        (causaría TclError con update_idletasks y mataría el loop del motor).
         """
-        # Si ya hay un callback pendiente en la cola de Tkinter, no encolar otro
         if self._after_sincronizar_pendiente:
             return
-        
+
         def _actualizar():
-            self._after_sincronizar_pendiente = False  # Liberar el flag
-            
-            # Leer valores actuales del core (thread-safe)
+            self._after_sincronizar_pendiente = False
+
             fichas_restantes_hw = shared_buffer.get_fichas_restantes()
             fichas_expendidas_hw = shared_buffer.get_fichas_expendidas()
 
-            # 1. Sincronizar fichas expendidas (Modelo: Base + Sesión)
             nuevo_total = self.inicio_fichas_expendidas + fichas_expendidas_hw
-            
+
             if nuevo_total != self.contadores["fichas_expendidas"]:
                 self.contadores["fichas_expendidas"] = nuevo_total
                 self.contadores_apertura["fichas_expendidas"] = self.inicio_apertura_fichas + fichas_expendidas_hw
                 self.contadores_parciales["fichas_expendidas"] = self.inicio_parcial_fichas + fichas_expendidas_hw
                 self.actualizar_contadores_gui()
-                self.guardar_configuracion()  # Debounced: no escribe en cada ficha
-                
-            # 2. Sincronizar fichas restantes si han cambiado
+                self.guardar_configuracion()
+
             if fichas_restantes_hw != self.contadores["fichas_restantes"]:
                 self.contadores["fichas_restantes"] = fichas_restantes_hw
                 self.actualizar_contadores_gui()
@@ -578,9 +573,11 @@ class ExpendedoraGUI:
         try:
             self._after_sincronizar_pendiente = True
             self.root.after(0, _actualizar)
-        except:
+        except Exception as e:
+            # Si root.after falla, liberar el flag y NO ejecutar nada en este hilo.
+            # El motor loop NO debe ejecutar código de Tkinter directamente.
             self._after_sincronizar_pendiente = False
-            _actualizar()
+            print(f"[GUI] root.after falló (se ignora, motor no afectado): {e}")
 
     def mostrar_alerta_motor_trabado(self, fichas_pendientes):
         """
@@ -653,8 +650,6 @@ class ExpendedoraGUI:
         }
         with open(self.config_file, 'w') as f:
             json.dump(config, f, indent=4)
-        # Actualizar el caché del core para que valor_ficha sea consistente
-        core._actualizar_cache_config()
 
     def configurar_promo(self, promo):
         config_window = tk.Toplevel(self.root)
