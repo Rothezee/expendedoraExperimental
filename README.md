@@ -16,13 +16,20 @@ Este repositorio contiene el software para un sistema de control de una máquina
 
 ## 🏗️ Arquitectura del Sistema
 
-El proyecto se compone de varias partes que trabajan en conjunto:
+El proyecto se compone de varias capas que trabajan en conjunto:
 
-1.  **Core de la Expendedora (`expendedora_core.py`)**: Es el cerebro del sistema que corre en la Raspberry Pi. Controla el hardware (motor y sensor) a través de los pines GPIO.
-2.  **Interfaz Gráfica (`expendedora_gui.py`)**: La aplicación de escritorio (Tkinter) que el operador utiliza para interactuar con la máquina.
-3.  **Buffer Compartido (`shared_buffer.py`)**: Un módulo crucial que gestiona la comunicación segura (thread-safe) entre la GUI y el core del motor.
-4.  **Scripts de Configuración (`configSO/`)**: Scripts de Bash para preparar el sistema operativo de la Raspberry Pi, creando un usuario restringido para la operación segura de la máquina.
-5.  **Backend (PHP)**: Un servidor web que recibe datos de la expendedora, como reportes de ventas y cierres diarios.
+1.  **UI (`expendedora_gui.py`)**: Capa de presentación Tkinter para operación diaria.
+2.  **Core (`expendedora_core.py`)**: Control de hardware (motor/sensor) y coordinación de telemetría.
+3.  **Estado (`shared_buffer.py`)**: Estado compartido thread-safe encapsulado en `MachineState`.
+4.  **Infraestructura (`infra/`)**:
+    - `ConfigRepository`: normalización y persistencia de `config.json`.
+    - `TelemetryClient`: armado/envío de heartbeat y telemetría HTTP.
+    - `AuthRepositoryMySQL`: autenticación y alta de cajeros en MySQL.
+5.  **Servicios (`services/`)**:
+    - `CounterService`: esquema único de contadores y reglas de actividad.
+    - `SessionService`: payloads de apertura/cierre/subcierre.
+6.  **Dominio (`domain/`)**: modelos `dataclass` para reducir diccionarios sueltos.
+7.  **Backend (PHP)**: recepción y persistencia centralizada.
 
 ---
 
@@ -49,6 +56,55 @@ python3 main.py
 ```
 
 Si se ha configurado el modo kiosk, la aplicación se iniciará automáticamente al encender la Raspberry Pi.
+
+---
+
+## 🔄 Actualización remota automática
+
+Se incluyó un updater cross-platform en `updater/auto_updater.py` para actualizar desde `origin/main`.
+
+### Configuración (`config.json`)
+
+Usa la sección:
+
+```json
+"updater": {
+  "enabled": false,
+  "remote": "origin",
+  "branch": "main",
+  "check_interval_s": 300,
+  "run_pip_install": false,
+  "requirements_file": "requirements.txt",
+  "restart_command_linux": "",
+  "restart_command_windows": "",
+  "preserve_files": ["config.json", "registro.json", "buffer_state.json"]
+}
+```
+
+Notas:
+- `enabled=true` permite que el updater aplique cambios.
+- `preserve_files` restaura esos archivos locales luego del `git reset --hard`.
+- Define `restart_command_*` para reiniciar la app/servicio automáticamente tras update.
+
+### Linux (Raspberry/MiniPC Linux)
+
+1. Prueba manual:
+   - `bash updater/run_update_linux.sh`
+2. Instalación automática con systemd timer:
+   - `sudo bash updater/systemd/install_updater_timer.sh`
+
+Archivos incluidos:
+- `updater/systemd/expendedora-updater.service`
+- `updater/systemd/expendedora-updater.timer`
+
+### Windows (MiniPC)
+
+1. Prueba manual:
+   - `powershell -ExecutionPolicy Bypass -File updater/run_update_windows.ps1`
+2. Registro de tarea programada (cada 5 min):
+   - `powershell -ExecutionPolicy Bypass -File updater/windows/register_updater_task.ps1`
+
+La tarea se registra como `ExpendedoraAutoUpdater`.
 
 ---
 
@@ -114,12 +170,22 @@ Si encuentras problemas como el motor no se detiene, las fichas no se cuentan co
 
 ```
 expendedoraExperimental/
+├── domain/
+│   └── models.py             # Dataclasses de dominio.
+├── infra/
+│   ├── auth_repository_mysql.py # Repositorio de autenticación MySQL.
+│   ├── config_repository.py  # Configuración y migración de config.
+│   └── telemetry_client.py   # Cliente HTTP para api_receptor.
+├── services/
+│   ├── counter_service.py    # Utilidades/validaciones de contadores.
+│   └── session_service.py    # Construcción de payloads de cierre.
 ├── expendedora_core.py     # Lógica principal del motor y sensor.
 ├── expendedora_gui.py      # Interfaz gráfica para el operador.
-├── shared_buffer.py        # Módulo para comunicación segura entre hilos.
+├── shared_buffer.py        # Estado compartido thread-safe.
 ├── main.py                 # Punto de entrada de la aplicación.
-├── config.json             # Archivo de configuración de promociones y precios.
+├── config.json             # Config API/MySQL/máquina + contadores.
 ├── registro.json           # Registro de ventas y operaciones.
+├── tests/                  # Pruebas unitarias y smoke tests.
 ├── configSO/               # Scripts para configurar el SO (modo kiosk).
 │   ├── crear_usuario_cajero.sh
 │   └── restricciones_cajero.sh

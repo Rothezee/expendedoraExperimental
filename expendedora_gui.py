@@ -1,12 +1,13 @@
 import tkinter as tk
 from tkinter import messagebox
-import json
-import os
 from datetime import datetime
 import requests
 from User_management import UserManagement
-import expendedora_core as core
+from expendedora_core import CoreController
 import shared_buffer
+from infra.config_repository import ConfigRepository, DEFAULT_DNI_ADMIN
+from services.counter_service import CounterService
+from services.session_service import SessionService
 
 urlCierres = "esp32_project/expendedora/insert_close_expendedora.php"  # URL DE CIERRES
 urlDatos = "esp32_project/expendedora/insert_data_expendedora.php"  # URL DE REPORTES
@@ -30,9 +31,10 @@ def _post_en_hilo(url, datos, descripcion=""):
     _threading.Thread(target=_enviar, daemon=True).start()
 
 class ExpendedoraGUI:
-    def __init__(self, root, username):
+    def __init__(self, root, username, core_controller=None):
         self.root = root
         self.username = username
+        self.core = core_controller or CoreController()
         self.root.title("Expendedora - Control") # El título no será visible
         self.root.attributes('-fullscreen', True) # Ocupa 100% de pantalla y oculta la barra de título
         self.root.configure(bg="#F4F7F6")
@@ -58,6 +60,11 @@ class ExpendedoraGUI:
         }
 
         # Inicializar variables de configuración
+        self.config_file = "config.json"
+        self.config_repository = ConfigRepository(self.config_file)
+        self.counter_service = CounterService()
+        self.session_service = SessionService()
+
         self.promociones = {
             "Promo 1": {"precio": 0, "fichas": 0},
             "Promo 2": {"precio": 0, "fichas": 0},
@@ -65,48 +72,19 @@ class ExpendedoraGUI:
         }
         self.valor_ficha = 1.0
         self.device_id = ""
+        self.codigo_hardware = ""
+        self.dni_admin = DEFAULT_DNI_ADMIN
+        self.api_config = {}
+        self.heartbeat_intervalo_s = 600
 
         # Contadores de la página principal
-        self.contadores = {
-            "fichas_expendidas": 0,
-            "dinero_ingresado": 0,
-            "promo1_contador": 0,
-            "promo2_contador": 0,
-            "promo3_contador": 0,
-            "fichas_restantes": 0,
-            "fichas_devolucion": 0,
-            "fichas_normales": 0,
-            "fichas_promocion": 0,
-            "fichas_cambio": 0
-        }
+        self.contadores = self.counter_service.default_counters()
 
         # Contadores de apertura
-        self.contadores_apertura = {
-            "fichas_expendidas": 0,
-            "dinero_ingresado": 0,
-            "promo1_contador": 0,
-            "promo2_contador": 0,
-            "promo3_contador": 0,
-            "fichas_restantes": 0,
-            "fichas_devolucion": 0,
-            "fichas_normales": 0,
-            "fichas_promocion": 0,
-            "fichas_cambio": 0
-        }
+        self.contadores_apertura = self.counter_service.default_counters()
 
         # Contadores parciales
-        self.contadores_parciales = {
-            "fichas_expendidas": 0,
-            "dinero_ingresado": 0,
-            "promo1_contador": 0,
-            "promo2_contador": 0,
-            "promo3_contador": 0,
-            "fichas_restantes": 0,
-            "fichas_devolucion": 0,
-            "fichas_normales": 0,
-            "fichas_promocion": 0,
-            "fichas_cambio": 0
-        }
+        self.contadores_parciales = self.counter_service.default_counters()
 
 
         # Flag para controlar si se realizó un cierre del día
@@ -117,8 +95,6 @@ class ExpendedoraGUI:
         self._after_sincronizar_pendiente = False  # True si ya hay un callback en cola
         self._guardar_config_timer = None          # Timer para debounce de guardar_configuracion
         
-        # Archivo de configuración
-        self.config_file = "config.json"
         self.cargar_configuracion()
         
         # Inicializar bases para contadores (Modelo: Base + Sesión)
@@ -140,8 +116,8 @@ class ExpendedoraGUI:
         self.root.bind_all("<Button-5>", _on_mousewheel)
         
         # Registrar función de actualización con el core
-        core.registrar_gui_actualizar(self.sincronizar_desde_core)
-        core.registrar_gui_alerta_motor(self.mostrar_alerta_motor_trabado)
+        self.core.register_gui_update(self.sincronizar_desde_core)
+        self.core.register_gui_motor_alert(self.mostrar_alerta_motor_trabado)
         shared_buffer.set_gui_update_callback(self.sincronizar_desde_core)
 
         # Header
@@ -308,6 +284,32 @@ class ExpendedoraGUI:
         btn_cambio = crear_boton_redondeado(input_area_cambio, "Cambio Fichas", self.procesar_cambio_fichas, "#1ABC9C", "white", width=180, height=40)
         btn_cambio.pack(side="left", padx=10)
 
+        # Herramientas rápidas de simulación en Inicio (solo admin)
+        if self.username == "admin":
+            self.sim_inicio_frame = tk.Frame(self.botones_frame, bg=self.colors["card"])
+            self.sim_inicio_frame.pack(fill="x", padx=10, pady=(0, 12))
+            tk.Frame(self.sim_inicio_frame, bg=self.colors["primary"], height=4).pack(fill="x", side="top")
+
+            sim_inicio_content = tk.Frame(self.sim_inicio_frame, bg=self.colors["card"], padx=20, pady=15)
+            sim_inicio_content.pack(fill="both")
+            tk.Label(
+                sim_inicio_content,
+                text="Simulación rápida (admin)",
+                font=self.fonts["h2"],
+                bg=self.colors["card"],
+                fg=self.colors["primary"],
+            ).pack(anchor="w", pady=(0, 10))
+
+            crear_boton_redondeado(
+                sim_inicio_content,
+                "Simular salida de fichas",
+                self.simular_salida_fichas,
+                self.colors["primary"],
+                "white",
+                width=260,
+                height=40,
+            ).pack(anchor="w")
+
         # Página de Contadores
         self.contadores_page, contadores_content = self.crear_contenedor_scrollable(root)
         
@@ -372,7 +374,8 @@ class ExpendedoraGUI:
         for promo in ["Promo 1", "Promo 2", "Promo 3"]:
             crear_boton_redondeado(config_content, f"Configurar {promo}", lambda p=promo: self.configurar_promo(p), self.colors["primary"], "white", width=300).pack(pady=5)
         crear_boton_redondeado(config_content, "Configurar Valor de Ficha", self.configurar_valor_ficha, self.colors["primary"], "white", width=300).pack(pady=5)
-        crear_boton_redondeado(config_content, "Configurar ID Dispositivo", self.configurar_device_id, self.colors["primary"], "white", width=300).pack(pady=5)
+        crear_boton_redondeado(config_content, "Configurar Codigo Hardware", self.configurar_device_id, self.colors["primary"], "white", width=300).pack(pady=5)
+        crear_boton_redondeado(config_content, "Configurar DNI Admin", self.configurar_dni_admin, self.colors["primary"], "white", width=300).pack(pady=5)
 
         # Página de reportes y cierre del día
         self.reportes_frame, reportes_content = self.crear_contenedor_scrollable(root)
@@ -514,22 +517,6 @@ class ExpendedoraGUI:
         
         return container, content_frame
 
-    #def enviar_datos_al_servidor(self):
-    #    datos = {
-    #        "device_id": "EXPENDEDORA_1",
-    #        "dato1": self.contadores['fichas_expendidas'],
-    #        "dato2": self.contadores['dinero_ingresado'],
-    #    }
-
-    #    try:
-    #        response = requests.post(urlDatos, json=datos)
-    #        if response.status_code == 200:
-    #            print("Datos enviados con éxito")
-    #        else:
-    #            print(f"Error al enviar datos: {response.status_code}")
-    #    except requests.exceptions.RequestException as e:
-    #        print(f"Error al conectar con el servidor: {e}")
-
     def mostrar_frame(self, frame):
         for f in [self.main_frame, self.contadores_page, self.config_frame, self.reportes_frame, self.simulacion_frame]:
             f.pack_forget()
@@ -593,33 +580,25 @@ class ExpendedoraGUI:
             messagebox.showwarning("⚠️ MOTOR TRABADO", mensaje)
 
             # Al cerrar el cartel (Aceptar), desbloquear el motor para continuar
-            core.desbloquear_motor()
+            self.core.unlock_motor()
         
         try:
             self.root.after(0, _mostrar)
         except:
             _mostrar()
+
     def cargar_configuracion(self):
-
-        if os.path.exists(self.config_file):
-            with open(self.config_file, 'r') as f:
-                config = json.load(f)
-                self.promociones = config.get("promociones", self.promociones)
-                self.valor_ficha = config.get("valor_ficha", self.valor_ficha)
-                self.device_id = config.get("device_id", self.device_id)
-                
-                # Cargar contadores, pero no reiniciar los de la sesión actual aquí
-                self.contadores = config.get("contadores", self.contadores)
-                self.contadores_apertura = config.get("contadores_apertura", self.contadores_apertura)
-                self.contadores_parciales = config.get("contadores_parciales", self.contadores_parciales)
-
-                # Asegurar que existan las nuevas claves (migración de config vieja)
-                for d in [self.contadores, self.contadores_apertura, self.contadores_parciales]:
-                    for key in ["fichas_devolucion", "fichas_normales", "fichas_promocion", "fichas_cambio"]:
-                        if key not in d:
-                            d[key] = 0
-        else:
-            self.guardar_configuracion(inmediato=True)
+        config = self.config_repository.load()
+        self.promociones = config.get("promociones", self.promociones)
+        self.valor_ficha = config.get("valor_ficha", self.valor_ficha)
+        self.device_id = config.get("device_id", self.device_id)
+        self.codigo_hardware = config.get("maquina", {}).get("codigo_hardware", self.device_id)
+        self.dni_admin = config.get("admin", {}).get("dni_admin", self.dni_admin)
+        self.api_config = config.get("api", self.api_config)
+        self.heartbeat_intervalo_s = config.get("heartbeat", {}).get("intervalo_s", self.heartbeat_intervalo_s)
+        self.contadores = self.counter_service.ensure_schema(config.get("contadores", self.contadores))
+        self.contadores_apertura = self.counter_service.ensure_schema(config.get("contadores_apertura", self.contadores_apertura))
+        self.contadores_parciales = self.counter_service.ensure_schema(config.get("contadores_parciales", self.contadores_parciales))
 
     def guardar_configuracion(self, inmediato=False):
         """
@@ -640,16 +619,20 @@ class ExpendedoraGUI:
 
     def _escribir_config_ahora(self):
         """Escribe config.json al disco (siempre en el hilo de Tkinter)."""
-        config = {
+        codigo_hardware = self.codigo_hardware or self.device_id
+        base_config = {
             "promociones": self.promociones,
             "valor_ficha": self.valor_ficha,
-            "device_id": self.device_id,
+            "device_id": codigo_hardware,
             "contadores": self.contadores,
             "contadores_apertura": self.contadores_apertura,
-            "contadores_parciales": self.contadores_parciales
+            "contadores_parciales": self.contadores_parciales,
+            "api": self.api_config,
+            "admin": {"dni_admin": self.dni_admin},
+            "maquina": {"codigo_hardware": codigo_hardware, "tipo_maquina": 1},
+            "heartbeat": {"intervalo_s": self.heartbeat_intervalo_s},
         }
-        with open(self.config_file, 'w') as f:
-            json.dump(config, f, indent=4)
+        self.config_repository.save(base_config)
 
     def configurar_promo(self, promo):
         config_window = tk.Toplevel(self.root)
@@ -703,25 +686,49 @@ class ExpendedoraGUI:
 
     def configurar_device_id(self):
         config_window = tk.Toplevel(self.root)
-        config_window.title("Configurar ID Dispositivo")
+        config_window.title("Configurar Codigo Hardware")
         config_window.geometry("300x150")
         config_window.configure(bg="#ffffff")
         
-        tk.Label(config_window, text="ID del Dispositivo:", bg="#ffffff", font=("Arial", 12)).pack(pady=10)
+        tk.Label(config_window, text="Codigo de Hardware:", bg="#ffffff", font=("Arial", 12)).pack(pady=10)
         id_entry = tk.Entry(config_window, font=("Arial", 12), bd=2, relief="solid")
-        id_entry.insert(0, self.device_id)
+        id_entry.insert(0, self.codigo_hardware or self.device_id)
         id_entry.pack(pady=5, padx=10, fill='x')
         
         def guardar_id():
             new_id = id_entry.get().strip()
             if new_id:
-                self.device_id = new_id
+                self.codigo_hardware = new_id
+                self.device_id = new_id  # Alias legacy
                 self.guardar_configuracion(inmediato=True)
                 config_window.destroy()
             else:
                 messagebox.showerror("Error", "El ID no puede estar vacío.")
         
         tk.Button(config_window, text="Guardar", command=guardar_id, bg="#4CAF50", fg="white", font=("Arial", 12), bd=0).pack(pady=5)
+        tk.Button(config_window, text="Cancelar", command=config_window.destroy, bg="#D32F2F", fg="white", font=("Arial", 12), bd=0).pack(pady=5)
+
+    def configurar_dni_admin(self):
+        config_window = tk.Toplevel(self.root)
+        config_window.title("Configurar DNI Admin")
+        config_window.geometry("300x150")
+        config_window.configure(bg="#ffffff")
+
+        tk.Label(config_window, text="DNI Administrador:", bg="#ffffff", font=("Arial", 12)).pack(pady=10)
+        dni_entry = tk.Entry(config_window, font=("Arial", 12), bd=2, relief="solid")
+        dni_entry.insert(0, self.dni_admin)
+        dni_entry.pack(pady=5, padx=10, fill='x')
+
+        def guardar_dni():
+            nuevo_dni = dni_entry.get().strip()
+            if nuevo_dni:
+                self.dni_admin = nuevo_dni
+                self.guardar_configuracion(inmediato=True)
+                config_window.destroy()
+            else:
+                messagebox.showerror("Error", "El DNI no puede estar vacío.")
+
+        tk.Button(config_window, text="Guardar", command=guardar_dni, bg="#4CAF50", fg="white", font=("Arial", 12), bd=0).pack(pady=5)
         tk.Button(config_window, text="Cancelar", command=config_window.destroy, bg="#D32F2F", fg="white", font=("Arial", 12), bd=0).pack(pady=5)
 
     def procesar_expender_fichas(self):
@@ -850,32 +857,10 @@ class ExpendedoraGUI:
 
     def realizar_apertura(self):
         # Inicia la apertura del día
-        self.contadores_apertura = {
-            "device_id": self.device_id,
-            "fichas_expendidas": self.contadores_apertura['fichas_expendidas'],
-            "dinero_ingresado": self.contadores_apertura['dinero_ingresado'],
-            "promo1_contador": self.contadores_apertura['promo1_contador'],
-            "promo2_contador": self.contadores_apertura['promo2_contador'],
-            "promo3_contador": self.contadores_apertura['promo3_contador'],
-            "fichas_devolucion": self.contadores_apertura['fichas_devolucion'],
-            "fichas_normales": self.contadores_apertura['fichas_normales'],
-            "fichas_promocion": self.contadores_apertura['fichas_promocion'],
-            "fichas_cambio": self.contadores_apertura['fichas_cambio']
-        }
+        self.contadores_apertura["device_id"] = self.device_id
         
         # Insertar cierre inicial con todo en 0 para registrar el día
-        cierre_inicial = {
-            "id_expendedora": self.device_id,
-            "fichas_expendidas": self.contadores_apertura['fichas_expendidas'],
-            "dinero_ingresado": self.contadores_apertura['dinero_ingresado'],
-            "promo1_contador": self.contadores_apertura['promo1_contador'],
-            "promo2_contador": self.contadores_apertura['promo2_contador'],
-            "promo3_contador": self.contadores_apertura['promo3_contador'],
-            "fichas_devolucion": self.contadores_apertura['fichas_devolucion'],
-            "fichas_normales": self.contadores_apertura['fichas_normales'],
-            "fichas_promocion": self.contadores_apertura['fichas_promocion'],
-            "fichas_cambio": self.contadores_apertura['fichas_cambio']
-        }
+        cierre_inicial = self.session_service.build_daily_close(self.device_id, self.contadores_apertura)
         
         # Enviar cierre inicial al servidor remoto y local (no bloquea la GUI)
         _post_en_hilo(DNS + urlCierres, cierre_inicial, "Apertura remota")
@@ -887,18 +872,7 @@ class ExpendedoraGUI:
 
     def realizar_cierre(self):
         # Realiza el cierre del día
-        cierre_info = {
-            "id_expendedora": self.device_id,
-            "fichas_expendidas": self.contadores_apertura['fichas_expendidas'],
-            "dinero_ingresado": self.contadores_apertura['dinero_ingresado'],
-            "promo1_contador": self.contadores_apertura['promo1_contador'],
-            "promo2_contador": self.contadores_apertura['promo2_contador'],
-            "promo3_contador": self.contadores_apertura['promo3_contador'],
-            "fichas_devolucion": self.contadores_apertura['fichas_devolucion'],
-            "fichas_normales": self.contadores_apertura['fichas_normales'],
-            "fichas_promocion": self.contadores_apertura['fichas_promocion'],
-            "fichas_cambio": self.contadores_apertura['fichas_cambio']
-        }
+        cierre_info = self.session_service.build_daily_close(self.device_id, self.contadores_apertura)
         # Actualizamos el device_id en el diccionario existente en lugar de recrearlo
         self.contadores_apertura["device_id"] = self.device_id
         mensaje_cierre = (
@@ -920,43 +894,9 @@ class ExpendedoraGUI:
         # para que el subcierre tenga los datos correctos
         self.contadores_parciales_pre_cierre = self.contadores_parciales.copy()
         
-        self.contadores = {
-            "fichas_expendidas": 0, 
-            "dinero_ingresado": 0,
-            "promo1_contador": 0,
-            "promo2_contador": 0,   
-            "promo3_contador": 0,
-            "fichas_restantes": 0,
-            "fichas_devolucion": 0,
-            "fichas_normales": 0,
-            "fichas_promocion": 0,
-            "fichas_cambio": 0
-        }
-
-        self.contadores_apertura = {
-            "fichas_expendidas": 0,
-            "dinero_ingresado": 0,
-            "promo1_contador": 0,
-            "promo2_contador": 0,
-            "promo3_contador": 0,
-            "fichas_restantes": 0,
-            "fichas_devolucion": 0,
-            "fichas_normales": 0,
-            "fichas_promocion": 0,
-            "fichas_cambio": 0
-        }
-        self.contadores_parciales = {
-            "fichas_expendidas": 0,
-            "dinero_ingresado": 0,
-            "promo1_contador": 0,
-            "promo2_contador": 0,
-            "promo3_contador": 0,
-            "fichas_restantes": 0,
-            "fichas_devolucion": 0,
-            "fichas_normales": 0,
-            "fichas_promocion": 0,
-            "fichas_cambio": 0
-        }
+        self.contadores = self.counter_service.default_counters()
+        self.contadores_apertura = self.counter_service.default_counters()
+        self.contadores_parciales = self.counter_service.default_counters()
         
         # Ajustar bases para que coincidan con el reset (Base = 0 - HW_Actual)
         hw_actual = shared_buffer.get_fichas_expendidas()
@@ -971,19 +911,7 @@ class ExpendedoraGUI:
 
     def realizar_cierre_parcial(self):
         # Realiza el cierre parcial
-        subcierre_info = {
-            "cierre_expendedora_id": self.device_id,
-            "partial_fichas": self.contadores_parciales['fichas_expendidas'],
-            "partial_dinero": self.contadores_parciales['dinero_ingresado'],
-            "partial_p1": self.contadores_parciales['promo1_contador'],
-            "partial_p2": self.contadores_parciales['promo2_contador'],
-            "partial_p3": self.contadores_parciales['promo3_contador'],
-            "partial_devolucion": self.contadores_parciales['fichas_devolucion'],
-            "partial_normales": self.contadores_parciales['fichas_normales'],
-            "partial_promocion": self.contadores_parciales['fichas_promocion'],
-            "partial_cambio": self.contadores_parciales['fichas_cambio'],
-            "employee_id": self.username
-        }
+        subcierre_info = self.session_service.build_partial_close(self.device_id, self.contadores_parciales, self.username)
 
         mensaje_subcierre = (
             f"Fichas expendidas: {subcierre_info['partial_fichas']}\n"
@@ -1001,18 +929,7 @@ class ExpendedoraGUI:
         _post_en_hilo(DNSLocal + urlSubcierre, subcierre_info, "Subcierre local")
 
         # Reiniciar los contadores parciales
-        self.contadores_parciales = {
-            "fichas_expendidas": 0,
-            "dinero_ingresado": 0,
-            "promo1_contador": 0,
-            "promo2_contador": 0,
-            "promo3_contador": 0,
-            "fichas_restantes": 0,
-            "fichas_devolucion": 0,
-            "fichas_normales": 0,
-            "fichas_promocion": 0,
-            "fichas_cambio": 0
-        }
+        self.contadores_parciales = self.counter_service.default_counters()
         
         # Ajustar base parcial
         hw_actual = shared_buffer.get_fichas_expendidas()
@@ -1044,30 +961,10 @@ class ExpendedoraGUI:
             print("[GUI] Usando contadores parciales actuales para subcierre")
         
         # Solo enviar subcierre si hay datos relevantes
-        tiene_datos = (
-            contadores_a_enviar['fichas_expendidas'] > 0 or
-            contadores_a_enviar['dinero_ingresado'] > 0 or
-            contadores_a_enviar['promo1_contador'] > 0 or
-            contadores_a_enviar['promo2_contador'] > 0 or
-            contadores_a_enviar['promo3_contador'] > 0 or
-            contadores_a_enviar['fichas_devolucion'] > 0 or
-            contadores_a_enviar['fichas_cambio'] > 0
-        )
+        tiene_datos = self.counter_service.has_activity(contadores_a_enviar)
         
         if tiene_datos:
-            Subcierre_info = {
-                "cierre_expendedora_id": self.device_id,
-                "partial_fichas": contadores_a_enviar['fichas_expendidas'],
-                "partial_dinero": contadores_a_enviar['dinero_ingresado'],
-                "partial_p1": contadores_a_enviar['promo1_contador'],
-                "partial_p2": contadores_a_enviar['promo2_contador'],
-                "partial_p3": contadores_a_enviar['promo3_contador'],
-                "partial_devolucion": contadores_a_enviar['fichas_devolucion'],
-                "partial_normales": contadores_a_enviar['fichas_normales'],
-                "partial_promocion": contadores_a_enviar['fichas_promocion'],
-                "partial_cambio": contadores_a_enviar['fichas_cambio'],
-                "employee_id": self.username
-            }
+            Subcierre_info = self.session_service.build_partial_close(self.device_id, contadores_a_enviar, self.username)
 
             # Enviar datos al servidor (no bloquea la GUI)
             _post_en_hilo(DNS + urlSubcierre, Subcierre_info, "Cierre sesion remoto")
@@ -1076,30 +973,8 @@ class ExpendedoraGUI:
             print("[GUI] No hay datos para enviar en el subcierre")
 
         # Reiniciar los contadores para la próxima sesión
-        self.contadores = {
-            "fichas_expendidas": 0,
-            "dinero_ingresado": 0,
-            "promo1_contador": 0,
-            "promo2_contador": 0,
-            "promo3_contador": 0,
-            "fichas_restantes": 0,
-            "fichas_devolucion": 0,
-            "fichas_normales": 0,
-            "fichas_promocion": 0,
-            "fichas_cambio": 0
-        }
-        self.contadores_parciales = {
-            "fichas_expendidas": 0,
-            "dinero_ingresado": 0,
-            "promo1_contador": 0,
-            "promo2_contador": 0,
-            "promo3_contador": 0,
-            "fichas_restantes": 0,
-            "fichas_devolucion": 0,
-            "fichas_normales": 0,
-            "fichas_promocion": 0,
-            "fichas_cambio": 0
-        }
+        self.contadores = self.counter_service.default_counters()
+        self.contadores_parciales = self.counter_service.default_counters()
         
         # Reiniciar contadores en el buffer compartido para asegurar coherencia
         shared_buffer.reset_fichas_expendidas_sesion()
@@ -1146,24 +1021,19 @@ class ExpendedoraGUI:
         messagebox.showinfo("Simulación", "Barrera activada: Se detectó una ficha.")
 
     def simular_entrega_fichas(self):
-        from gpio_sim import GPIO
-        # Simular flanco descendente en el sensor ENTHOPER
-        GPIO.simulate_sensor_pulse(core.ENTHOPER)
+        self.simular_salida_fichas()
         
     def simular_salida_fichas(self):
-        """Simula el sensor del hopper detectando una ficha (para pruebas)"""
+        """Simula el sensor del hopper detectando una ficha (para pruebas)."""
         from gpio_sim import GPIO
-
         # Simular flanco descendente en el sensor ENTHOPER
-        GPIO.simulate_sensor_pulse(core.ENTHOPER)
-        # messagebox.showinfo("Simulación", "Sensor del hopper activado - Ficha expendida")
+        GPIO.simulate_sensor_pulse(self.core.sensor_pin)
             
     def simular_promo(self, promo):
         # Enviar comando al core via buffer compartido
         fichas = self.promociones[promo]["fichas"]
         promo_num = int(promo.split()[1])
         shared_buffer.gui_to_core_queue.put({'type': 'promo', 'promo_num': promo_num, 'fichas': fichas})
-        # print(f"[GUI] Comando promo enviado: {promo}, fichas: {fichas}")
 
         # Aumentar el dinero ingresado según el precio de la promoción
         precio = self.promociones[promo]["precio"]
@@ -1206,11 +1076,6 @@ class ExpendedoraGUI:
         current_time = now.strftime("%Y-%m-%d %H:%M:%S")
         self.footer_label.config(text=current_time)  # Actualizar el label del footer
         self._after_id = self.root.after(1000, self.actualizar_fecha_hora)  # Llamar a esta función cada segundo
-
-    # NOTA: Esta función ya no es necesaria - ahora usamos callbacks en tiempo real
-    # def actualizar_desde_hardware(self):
-    #     Los callbacks on_ficha_expendida() y on_fichas_agregadas()
-    #     actualizan la GUI inmediatamente cuando hay cambios en el hardware
 
 if __name__ == "__main__":
     root = tk.Tk()

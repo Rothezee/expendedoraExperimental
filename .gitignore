@@ -1,2 +1,7 @@
 node_modules/
 .env
+__pycache__/
+*.pyc
+buffer_state.json
+updater/last_update_state.json
+updater/updater.lock

@@ -1,0 +1,10 @@
+[Unit]
+Description=Expendedora Auto Updater (one-shot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/expendedoraExperimental
+ExecStart=/bin/bash /opt/expendedoraExperimental/updater/run_update_linux.sh
+

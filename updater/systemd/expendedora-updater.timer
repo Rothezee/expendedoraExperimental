@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Expendedora updater every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=expendedora-updater.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

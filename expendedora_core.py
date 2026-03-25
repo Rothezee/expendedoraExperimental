@@ -1,15 +1,17 @@
-from gpio_sim import GPIO  # import RPi.GPIO as GPIO  # Descomentar para usar en hardware real
+from gpio_sim import GPIO #import RPi.GPIO as GPIO  # Descomentar para usar en hardware real#
 import time
-import requests
-import sqlite3
 import threading
 import json
 import os
 from datetime import datetime
 import shared_buffer
+from infra.config_repository import ConfigRepository
+from infra.telemetry_client import TelemetryClient
 
 config_file = "config.json"
 registro_file = "registro.json"
+_config_repository = ConfigRepository(config_file)
+_telemetry_client = TelemetryClient(_config_repository)
 
 # --- ESCRITURA A DISCO CON DEBOUNCE ---
 # Evita escribir registro.json en cada ficha (costoso en SD card).
@@ -17,6 +19,8 @@ registro_file = "registro.json"
 _registro_pendiente = {}
 _registro_lock = threading.Lock()
 _registro_timer = None
+
+#GPIO.setwarnings(False) descomentar para usar en hardware real
 
 def _flush_registro():
     """Escribe el registro acumulado al disco (llamado por el timer)."""
@@ -52,8 +56,6 @@ def _programar_flush_registro():
         _registro_timer.daemon = True
         _registro_timer.start()
 
-#GPIO.setwarnings(False) descomentar para usar en hardware real
-
 # --- CONFIGURACIÓN DE PINES ---
 MOTOR_PIN = 24  # Pin del motor
 ENTHOPER = 16  # Sensor para contar fichas que salen
@@ -65,11 +67,7 @@ PULSO_MAX = 0.5   # Duración máxima del pulso (500ms) - filtro de bloqueos
 # --- CONFIGURACIÓN DE PROTECCIÓN DEL MOTOR ---
 TIMEOUT_MOTOR = 2.0  # 2 segundos máximo sin dispensar ficha (PROTECCIÓN ANTI-QUEMADO)
 
-# --- CONFIGURACIÓN DE LA BASE DE DATOS ---
-DB_FILE = "expendedora.db"
-
-# --- CONFIGURACIÓN DE SERVIDORES ---
-SERVER_HEARTBEAT = "https://maquinasbonus.com/esp32_project/insert_heartbeat.php"
+DEFAULT_HEARTBEAT_INTERVALO_S = 600  # 10 minutos
 
 # --- CALLBACK SIMPLE PARA NOTIFICAR CAMBIOS ---
 gui_actualizar_funcion = None  # Función simple que actualiza la GUI cuando cambian los contadores
@@ -82,13 +80,11 @@ def registrar_gui_actualizar(funcion):
     """Registra la función de actualización de la GUI"""
     global gui_actualizar_funcion
     gui_actualizar_funcion = funcion
-    # print("[CORE] Función de actualización GUI registrada")
 
 def registrar_gui_alerta_motor(funcion):
     """Registra la función de alerta de motor trabado para la GUI"""
     global gui_alerta_motor_funcion
     gui_alerta_motor_funcion = funcion
-    # print("[CORE] Función de alerta motor GUI registrada")
 
 def desbloquear_motor():
     """Permite reanudar el motor después de un bloqueo por timeout"""
@@ -96,37 +92,32 @@ def desbloquear_motor():
     bloqueo_emergencia = False
     print("[CORE] Motor desbloqueado por usuario, reanudando operación...")
 
-def vaciar_fichas_restantes():
-    """Resetea el contador de fichas restantes a 0"""
-    shared_buffer.set_fichas_restantes(0)
-    print("[CORE] Contador de fichas vaciado (0) por solicitud de usuario.")
-    
-    # Notificar a la GUI para que se sincronice
-    if gui_actualizar_funcion:
-        try:
-            gui_actualizar_funcion()
-        except Exception as e:
-            print(f"[ERROR] GUI actualizar falló: {e}")
-
-def get_fichas_restantes():
-    """Obtener fichas_restantes de forma thread-safe"""
-    return shared_buffer.get_fichas_restantes()
-
-def get_fichas_expendidas():
-    """Obtener fichas_expendidas de forma thread-safe"""
-    return shared_buffer.get_fichas_expendidas()
-
 # ----------CONEXION CON GUI Y LOGICA PARA GUARDAR REGISTROS---------------
+
 def cargar_configuracion():
-    if os.path.exists(config_file):
-        with open(config_file, 'r') as f:
-            return json.load(f)
-    else:
-        return {"promociones": {}, "valor_ficha": 1.0, "device_id": ""}
+    return _config_repository.load()
 
 def guardar_configuracion(config):
-    with open(config_file, 'w') as f:
-        json.dump(config, f, indent=4)
+    _config_repository.save(config)
+
+def hidratar_estado_compartido_desde_config():
+    """
+    Recupera contadores críticos desde config para evitar reset a 0
+    tras cortes de energía y sincronizar telemetría.
+    """
+    try:
+        config = cargar_configuracion()
+        contadores = config.get("contadores", {})
+        shared_buffer.set_fichas_restantes(int(contadores.get("fichas_restantes", 0)))
+        shared_buffer.set_fichas_expendidas(int(contadores.get("fichas_expendidas", 0)))
+        shared_buffer.set_r_cuenta(float(contadores.get("dinero_ingresado", 0)))
+        print(
+            "[CORE] Estado recuperado desde config: "
+            f"fichas_total={contadores.get('fichas_expendidas', 0)}, "
+            f"dinero={contadores.get('dinero_ingresado', 0)}"
+        )
+    except Exception as exc:
+        print(f"[CORE] No se pudo hidratar estado desde config: {exc}")
 
 def iniciar_apertura():
     registro = {
@@ -185,29 +176,6 @@ GPIO.setup(ENTHOPER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 GPIO.setup(MOTOR_PIN, GPIO.OUT)
 GPIO.output(MOTOR_PIN, GPIO.LOW)
 
-# --- CONFIGURACIÓN DE BASE DE DATOS ---
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS config (clave TEXT PRIMARY KEY, valor INTEGER)''')
-    conn.commit()
-    conn.close()
-
-def get_config(clave, default=0):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT valor FROM config WHERE clave=?", (clave,))
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else default
-
-def set_config(clave, valor):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO config (clave, valor) VALUES (?, ?) ON CONFLICT(clave) DO UPDATE SET valor=?", (clave, valor, valor))
-    conn.commit()
-    conn.close()
-
 def enviar_datos_venta_servidor():
     """
     NOTA: Esta función se llama cuando el motor se detiene.
@@ -215,46 +183,24 @@ def enviar_datos_venta_servidor():
         Enviamos el contador TOTAL para el servidor, no el de sesión.
     """
 
-    DNS = "https://maquinasbonus.com/"  # DNS servidor
-    DNSLocal = "http://127.0.0.1/"  # DNS servidor local
-    url = "esp32_project/expendedora/insert_data_expendedora.php"  # URL de datos generales
-
     config = cargar_configuracion()
-    device_id = config.get("device_id")
-
-    datos = {
-        "device_id": device_id,
-        "dato1": int(shared_buffer.get_fichas_expendidas_total()), # Usar contador TOTAL
-        "dato2": int(shared_buffer.get_r_cuenta()) # Asegurar que es entero
-    }
-    try:
-        # Usamos la URL de datos generales para reportar la venta
-        response = requests.post(DNSLocal + url, json=datos, timeout=5)
-        # print(f"[REPORTE VENTA] Datos de venta enviados. Respuesta: {response.status_code}")
-    except requests.RequestException as e:
-        print(f"[ERROR REPORTE VENTA] No se pudo enviar el reporte de venta (local): {e}")
-
-    try:
-        # Usamos la URL de datos generales para reportar la venta
-        response = requests.post(DNS + url, json=datos, timeout=5)
-    except requests.RequestException as e:
-        print(f"[ERROR REPORTE VENTA] No se pudo enviar el reporte de venta (remoto): {e}")
+    datos = _telemetry_client.build_telemetry_body(
+        config,
+        fichas=shared_buffer.get_fichas_expendidas_total(),
+        dinero=shared_buffer.get_r_cuenta(),
+    )
+    _telemetry_client.post_body(datos, "telemetria")
 
 # --- ENVÍO DE DATOS AL SERVIDOR ---
 def enviar_pulso():
     config = cargar_configuracion()
-    device_id = config.get("device_id")
-    data = {"device_id": device_id}
-    try:
-        response = requests.post(SERVER_HEARTBEAT, json=data, timeout=5)
-        # print("Heartbeat enviado:", response.text)
-    except requests.RequestException as e:
-        print("Error enviando heartbeat:", e)
+    data = _telemetry_client.build_heartbeat_body(config)
+    _telemetry_client.post_body(data, "heartbeat")
 
-    threading.Timer(60, enviar_pulso).start()  
-
-# --- CONTROL DEL MOTOR Y CONTEO DE FICHAS ---
-import time
+    intervalo = config.get("heartbeat", {}).get("intervalo_s", DEFAULT_HEARTBEAT_INTERVALO_S)
+    heartbeat_timer = threading.Timer(intervalo, enviar_pulso)
+    heartbeat_timer.daemon = True
+    heartbeat_timer.start()
 
 def controlar_motor():
     """
@@ -382,43 +328,10 @@ def controlar_motor():
             pass
         time.sleep(0.1)
 
-# --- CONVERSIÓN DE DINERO A FICHAS ---
-def convertir_fichas():
-    valor1 = get_config("VALOR1", 1000)
-    valor2 = get_config("VALOR2", 5000)
-    valor3 = get_config("VALOR3", 10000)
-    fichas1 = get_config("FICHAS1", 1)
-    fichas2 = get_config("FICHAS2", 2)
-    fichas3 = get_config("FICHAS3", 5)
-    
-    cuenta = shared_buffer.get_cuenta()
-    fichas_a_agregar = 0
-    # Lógica para determinar cuántas fichas agregar basado en 'cuenta'
-    if cuenta >= valor1:
-        fichas_a_agregar = fichas1
-        shared_buffer.add_to_cuenta(-valor1)
-    
-    if fichas_a_agregar > 0:
-        shared_buffer.agregar_fichas(fichas_a_agregar)
-
-# --- FUNCIONES PARA LA GUI ---
-def obtener_dinero_ingresado():
-    return shared_buffer.get_cuenta()
-
-def obtener_fichas_disponibles():
-    # return get_fichas_restantes() linea que funcionaba anteriormente 12/3/2025
-    return shared_buffer.get_fichas_restantes()
-
-def expender_fichas(cantidad):
-    """
-    Función llamada desde la GUI para agregar fichas al dispensador
-    """
-    shared_buffer.agregar_fichas(cantidad)
-
 # --- PROGRAMA PRINCIPAL ---
 def iniciar_sistema():
     """Inicializa el sistema de control de motor (sin GUI)"""
-    init_db()
+    hidratar_estado_compartido_desde_config()
     enviar_pulso()
 
     # Iniciar hilo de control del motor
@@ -434,3 +347,27 @@ def detener_sistema():
     GPIO.output(MOTOR_PIN, GPIO.LOW)
     GPIO.cleanup()
     print("Sistema detenido")
+
+
+class CoreController:
+    """
+    Fachada OO del módulo core para inyección en GUI/main.
+    Mantiene compatibilidad con la lógica actual basada en funciones.
+    """
+
+    sensor_pin = ENTHOPER
+
+    def register_gui_update(self, callback):
+        registrar_gui_actualizar(callback)
+
+    def register_gui_motor_alert(self, callback):
+        registrar_gui_alerta_motor(callback)
+
+    def unlock_motor(self):
+        desbloquear_motor()
+
+    def start(self):
+        return iniciar_sistema()
+
+    def stop(self):
+        detener_sistema()

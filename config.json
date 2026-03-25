@@ -14,28 +14,81 @@
         }
     },
     "valor_ficha": 1000.0,
+    "device_id": "EXPENDEDORA_1",
     "contadores": {
-        "fichas_expendidas": 0,
-        "dinero_ingresado": 0,
-        "promo1_contador": 0,
+        "fichas_expendidas": 7,
+        "dinero_ingresado": 5000.0,
+        "promo1_contador": 1,
         "promo2_contador": 0,
         "promo3_contador": 0,
-        "fichas_restantes": 0
+        "fichas_restantes": 0,
+        "fichas_devolucion": 0,
+        "fichas_normales": 2,
+        "fichas_promocion": 5,
+        "fichas_cambio": 0
     },
     "contadores_apertura": {
-        "fichas_expendidas": 0,
-        "dinero_ingresado": 0,
-        "promo1_contador": 0,
+        "fichas_expendidas": 7,
+        "dinero_ingresado": 5000.0,
+        "promo1_contador": 1,
         "promo2_contador": 0,
         "promo3_contador": 0,
-        "fichas_restantes": 0
+        "fichas_restantes": 0,
+        "fichas_devolucion": 0,
+        "fichas_normales": 2,
+        "fichas_promocion": 5,
+        "fichas_cambio": 0
     },
     "contadores_parciales": {
-        "fichas_expendidas": 0,
-        "dinero_ingresado": 0,
-        "promo1_contador": 0,
+        "fichas_expendidas": 7,
+        "dinero_ingresado": 5000.0,
+        "promo1_contador": 1,
         "promo2_contador": 0,
         "promo3_contador": 0,
-        "fichas_restantes": 0
+        "fichas_restantes": 0,
+        "fichas_devolucion": 0,
+        "fichas_normales": 2,
+        "fichas_promocion": 5,
+        "fichas_cambio": 0
+    },
+    "api": {
+        "base_urls": [
+            "http://127.0.0.1",
+            "https://maquinasbonus.com"
+        ],
+        "endpoint_receptor": "AdministrationPanel/src/devices/api_receptor.php",
+        "timeout_s": 5
+    },
+    "admin": {
+        "dni_admin": "00000000"
+    },
+    "maquina": {
+        "codigo_hardware": "EXPENDEDORA_1",
+        "tipo_maquina": 1
+    },
+    "heartbeat": {
+        "intervalo_s": 600
+    },
+    "mysql": {
+        "host": "localhost",
+        "port": 3306,
+        "user": "root",
+        "password": "",
+        "database": "sistemadeadministracion"
+    },
+    "updater": {
+        "enabled": false,
+        "remote": "origin",
+        "branch": "main",
+        "check_interval_s": 300,
+        "run_pip_install": false,
+        "requirements_file": "requirements.txt",
+        "restart_command_linux": "",
+        "restart_command_windows": "",
+        "preserve_files": [
+            "config.json",
+            "registro.json",
+            "buffer_state.json"
+        ]
     }
 }
