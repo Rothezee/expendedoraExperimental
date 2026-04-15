@@ -54,9 +54,11 @@
     "api": {
         "base_urls": [
             "http://127.0.0.1",
-            "https://maquinasbonus.com"
+            "https://app.maquinasbonus.com"
         ],
         "endpoint_receptor": "AdministrationPanel/src/devices/api_receptor.php",
+        "endpoint_receptor_local": "AdministrationPanel/src/devices/api_receptor.php",
+        "endpoint_receptor_cloud": "src/devices/api_receptor.php",
         "timeout_s": 5
     },
     "admin": {
@@ -164,7 +166,7 @@
         "reconnect_after_failures": 3,
         "backend_timeout_s": 3.0,
         "internet_host": "8.8.8.8",
-        "backend_url": "https://maquinasbonus.com/",
+        "backend_url": "https://app.maquinasbonus.com/",
         "preferred_interface": ""
     }
 }

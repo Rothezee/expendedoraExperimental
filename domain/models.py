@@ -60,7 +60,7 @@ class MachineConfig:
     dni_admin: str = "00000000"
     codigo_hardware: str = ""
     tipo_maquina: int = 1
-    api_base_urls: List[str] = field(default_factory=lambda: ["http://127.0.0.1", "https://maquinasbonus.com"])
+    api_base_urls: List[str] = field(default_factory=lambda: ["http://127.0.0.1", "https://app.maquinasbonus.com"])
     endpoint_receptor: str = "AdministrationPanel/src/devices/api_receptor.php"
     timeout_s: int = 5
     heartbeat_intervalo_s: int = 600

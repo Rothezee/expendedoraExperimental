@@ -14,7 +14,7 @@ from services.session_service import SessionService
 urlCierres = "AdministrationPanel/src/expendedora/insert_close_expendedora.php"  # URL DE CIERRES
 urlDatos = "esp32_project/expendedora/insert_data_expendedora.php"  # URL DE REPORTES
 urlSubcierre = "AdministrationPanel/src/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES
-DNS = "https://maquinasbonus.com/"  # DNS servidor
+DNS = "https://app.maquinasbonus.com/"  # DNS servidor
 DNSLocal = "http://127.0.0.1/"  # DNS servidor local
 
 DEFAULT_PROMO_HOTKEYS = {
@@ -1589,8 +1589,10 @@ class ExpendedoraGUI:
 
         daily_tab = tk.Frame(notebook, bg="#ffffff")
         partial_tab = tk.Frame(notebook, bg="#ffffff")
+        summary_tab = tk.Frame(notebook, bg="#ffffff")
         notebook.add(daily_tab, text="Cierres diarios")
         notebook.add(partial_tab, text="Cierres parciales")
+        notebook.add(summary_tab, text="Resumen reportes")
 
         daily_cols = ("id_cierre", "id_dispositivo", "fichas_totales", "dinero", "p1", "p2", "p3", "fichas_promo", "fecha_apertura", "tipo_evento")
         partial_cols = (
@@ -1609,6 +1611,20 @@ class ExpendedoraGUI:
         )
         daily_tree = ttk.Treeview(daily_tab, columns=daily_cols, show="headings")
         partial_tree = ttk.Treeview(partial_tab, columns=partial_cols, show="headings")
+        summary_text = tk.Text(
+            summary_tab,
+            bg="#F8F9F9",
+            fg="#2C3E50",
+            font=("Consolas", 10),
+            wrap="word",
+            bd=1,
+            relief="solid",
+            padx=10,
+            pady=10,
+        )
+        summary_text.pack(fill="both", expand=True, padx=8, pady=8)
+        summary_text.insert("1.0", "Cargando resumen...")
+        summary_text.config(state="disabled")
 
         for tree, columns in ((daily_tree, daily_cols), (partial_tree, partial_cols)):
             for col in columns:
@@ -1632,6 +1648,61 @@ class ExpendedoraGUI:
                 values = [row.get(col, "") for col in columns]
                 tree.insert("", "end", values=values)
 
+        def to_float(value):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def to_int(value):
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return 0
+
+        def render_summary(daily_rows, partial_rows):
+            total_daily = len(daily_rows)
+            total_partial = len(partial_rows)
+
+            total_dinero_daily = sum(to_float(r.get("dinero")) for r in daily_rows)
+            total_fichas_daily = sum(to_int(r.get("fichas_totales")) for r in daily_rows)
+            total_promo_daily = sum(to_int(r.get("fichas_promo")) for r in daily_rows)
+
+            total_dinero_partial = sum(to_float(r.get("dinero")) for r in partial_rows)
+            total_fichas_partial = sum(to_int(r.get("fichas_totales")) for r in partial_rows)
+            total_devolucion_partial = sum(to_int(r.get("fichas_devolucion")) for r in partial_rows)
+            total_cambio_partial = sum(to_int(r.get("fichas_cambio")) for r in partial_rows)
+
+            avg_daily = (total_dinero_daily / total_daily) if total_daily else 0.0
+            avg_partial = (total_dinero_partial / total_partial) if total_partial else 0.0
+
+            lines = [
+                "RESUMEN DE REPORTES",
+                "",
+                f"- Registros diarios cargados: {total_daily}",
+                f"- Registros parciales cargados: {total_partial}",
+                "",
+                "CIERRES DIARIOS",
+                f"- Dinero total: ${total_dinero_daily:.2f}",
+                f"- Fichas totales: {total_fichas_daily}",
+                f"- Fichas promo: {total_promo_daily}",
+                f"- Promedio dinero por cierre: ${avg_daily:.2f}",
+                "",
+                "CIERRES PARCIALES",
+                f"- Dinero total: ${total_dinero_partial:.2f}",
+                f"- Fichas totales: {total_fichas_partial}",
+                f"- Fichas devolución: {total_devolucion_partial}",
+                f"- Fichas cambio: {total_cambio_partial}",
+                f"- Promedio dinero por subcierre: ${avg_partial:.2f}",
+                "",
+                f"Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            ]
+
+            summary_text.config(state="normal")
+            summary_text.delete("1.0", tk.END)
+            summary_text.insert("1.0", "\n".join(lines))
+            summary_text.config(state="disabled")
+
         def cargar():
             status_lbl.config(text="Consultando BD...", fg="#1F618D")
             try:
@@ -1650,6 +1721,7 @@ class ExpendedoraGUI:
                         lambda: (
                             fill_tree(daily_tree, daily_rows, daily_cols),
                             fill_tree(partial_tree, partial_rows, partial_cols),
+                            render_summary(daily_rows, partial_rows),
                             status_lbl.config(
                                 text=f"{len(daily_rows)} diarios | {len(partial_rows)} parciales",
                                 fg="#1E8449",

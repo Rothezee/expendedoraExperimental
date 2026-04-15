@@ -3,8 +3,10 @@ import os
 from typing import Any, Dict
 
 
-DEFAULT_API_BASE_URLS = ["http://127.0.0.1", "https://maquinasbonus.com"]
+DEFAULT_API_BASE_URLS = ["http://127.0.0.1", "https://app.maquinasbonus.com"]
 DEFAULT_API_ENDPOINT = "AdministrationPanel/src/devices/api_receptor.php"
+DEFAULT_API_ENDPOINT_LOCAL = "AdministrationPanel/src/devices/api_receptor.php"
+DEFAULT_API_ENDPOINT_CLOUD = "src/devices/api_receptor.php"
 DEFAULT_API_TIMEOUT_S = 5
 DEFAULT_DNI_ADMIN = "00000000"
 DEFAULT_HEARTBEAT_INTERVAL_S = 600
@@ -112,6 +114,15 @@ class ConfigRepository:
         if not base_urls:
             base_urls = list(DEFAULT_API_BASE_URLS)
         endpoint = str(api.get("endpoint_receptor", DEFAULT_API_ENDPOINT) or "").strip().lstrip("/")
+        endpoint_local = str(
+            api.get("endpoint_receptor_local", endpoint or DEFAULT_API_ENDPOINT_LOCAL) or ""
+        ).strip().lstrip("/")
+        endpoint_cloud = str(api.get("endpoint_receptor_cloud", "") or "").strip().lstrip("/")
+        if not endpoint_cloud:
+            if endpoint.startswith("AdministrationPanel/"):
+                endpoint_cloud = endpoint.replace("AdministrationPanel/", "", 1)
+            else:
+                endpoint_cloud = endpoint or DEFAULT_API_ENDPOINT_CLOUD
         timeout_s = self._safe_int(api.get("timeout_s", DEFAULT_API_TIMEOUT_S), DEFAULT_API_TIMEOUT_S, minimum=1)
 
         admin = config.get("admin", {})
@@ -307,6 +318,8 @@ class ConfigRepository:
         merged["api"] = {
             "base_urls": base_urls,
             "endpoint_receptor": endpoint,
+            "endpoint_receptor_local": endpoint_local or DEFAULT_API_ENDPOINT_LOCAL,
+            "endpoint_receptor_cloud": endpoint_cloud or DEFAULT_API_ENDPOINT_CLOUD,
             "timeout_s": timeout_s,
         }
         merged["admin"] = {"dni_admin": dni_admin}

@@ -1,0 +1,11 @@
+# Dependencias para ejecutar en Raspberry Pi 4
+# Python recomendado: 3.11+ (tambien funciona con 3.10 en la mayoria de casos)
+
+# HTTP cliente (telemetria, comprobaciones de red y GUI)
+requests
+
+# Conector MySQL para autenticacion y reportes
+mysql-connector-python
+
+# GPIO real en Raspberry Pi
+RPi.GPIO; platform_system == "Linux" and (platform_machine == "armv7l" or platform_machine == "aarch64")

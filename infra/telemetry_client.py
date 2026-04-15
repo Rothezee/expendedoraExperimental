@@ -10,16 +10,32 @@ class TelemetryClient:
         self.config_repository = config_repository
 
     @staticmethod
+    def _is_local_base(base_url: str) -> bool:
+        lower = base_url.lower()
+        return "127.0.0.1" in lower or "localhost" in lower
+
+    @staticmethod
+    def _is_cloud_base(base_url: str) -> bool:
+        return "app.maquinasbonus.com" in base_url.lower()
+
+    @staticmethod
     def _build_urls(config: Dict[str, Any]) -> List[str]:
         api = config.get("api", {})
         base_urls = api.get("base_urls", [])
         endpoint = str(api.get("endpoint_receptor", "") or "").strip().lstrip("/")
+        endpoint_local = str(api.get("endpoint_receptor_local", endpoint) or "").strip().lstrip("/")
+        endpoint_cloud = str(api.get("endpoint_receptor_cloud", endpoint) or "").strip().lstrip("/")
         urls: List[str] = []
         for base in base_urls:
             normalized_base = str(base).strip().rstrip("/")
             if not normalized_base:
                 continue
-            urls.append(f"{normalized_base}/{endpoint}" if endpoint else normalized_base)
+            target_endpoint = endpoint
+            if TelemetryClient._is_local_base(normalized_base) and endpoint_local:
+                target_endpoint = endpoint_local
+            elif TelemetryClient._is_cloud_base(normalized_base) and endpoint_cloud:
+                target_endpoint = endpoint_cloud
+            urls.append(f"{normalized_base}/{target_endpoint}" if target_endpoint else normalized_base)
         return urls
 
     @staticmethod
