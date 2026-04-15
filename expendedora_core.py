@@ -56,9 +56,30 @@ def _programar_flush_registro():
         _registro_timer.daemon = True
         _registro_timer.start()
 
-# --- CONFIGURACIÓN DE PINES ---
-MOTOR_PIN = 24  # Pin del motor
-ENTHOPER = 16  # Sensor para contar fichas que salen
+# --- CONFIGURACIÓN DE TOLVAS ---
+DEFAULT_TOLVAS = [
+    {
+        "id": 1,
+        "nombre": "Tolva 1",
+        "motor_pin": 24,
+        "sensor_pin": 16,
+        "calibracion": {"pulso_min_s": 0.05, "pulso_max_s": 0.5, "timeout_motor_s": 2.0},
+    },
+    {
+        "id": 2,
+        "nombre": "Tolva 2",
+        "motor_pin": 25,
+        "sensor_pin": 17,
+        "calibracion": {"pulso_min_s": 0.05, "pulso_max_s": 0.5, "timeout_motor_s": 2.0},
+    },
+    {
+        "id": 3,
+        "nombre": "Tolva 3",
+        "motor_pin": 23,
+        "sensor_pin": 27,
+        "calibracion": {"pulso_min_s": 0.05, "pulso_max_s": 0.5, "timeout_motor_s": 2.0},
+    },
+]
 
 # --- CONFIGURACIÓN DEL SENSOR ---
 PULSO_MIN = 0.05  # Duración mínima del pulso (50ms) - filtro de ruido
@@ -75,6 +96,32 @@ gui_alerta_motor_funcion = None  # Función para alertar sobre motor trabado
 
 # Variable global para controlar el bloqueo por emergencia
 bloqueo_emergencia = False
+_tolvas_lock = threading.Lock()
+_tolvas = list(DEFAULT_TOLVAS)
+_tolva_seleccionada_idx = 0
+_tolvas_trabadas = set()
+_ultima_tolva_motor_idx = None
+_ultimo_apagado_motor_ts = 0.0
+_ventana_pulso_tardio_por_tolva = {}
+_auto_calibration = {
+    "running": False,
+    "finished": False,
+    "target_tolva_id": None,
+    "target_samples": 0,
+    "counted_samples": 0,
+    "total_counted_samples": 0,
+    "rounds_total": 1,
+    "current_round": 1,
+    "round_results": [],
+    "first_pulse_delays": [],
+    "pulse_durations": [],
+    "motor_on_ts": None,
+    "pulse_open_ts": None,
+    "start_ts": 0.0,
+    "max_duration_s": 45.0,
+    "error": "",
+    "result": {},
+}
 
 def registrar_gui_actualizar(funcion):
     """Registra la función de actualización de la GUI"""
@@ -91,6 +138,331 @@ def desbloquear_motor():
     global bloqueo_emergencia
     bloqueo_emergencia = False
     print("[CORE] Motor desbloqueado por usuario, reanudando operación...")
+
+
+def _cargar_tolvas_desde_config():
+    global _tolvas, _ventana_pulso_tardio_por_tolva
+    cfg = cargar_configuracion()
+    machine = cfg.get("maquina", {})
+    hoppers = machine.get("hoppers", DEFAULT_TOLVAS)
+    if not isinstance(hoppers, list) or not hoppers:
+        hoppers = list(DEFAULT_TOLVAS)
+    normalized = []
+    for idx, hopper in enumerate(hoppers[:3], start=1):
+        if not isinstance(hopper, dict):
+            hopper = {}
+        fallback = DEFAULT_TOLVAS[idx - 1]
+        normalized.append(
+            {
+                "id": int(hopper.get("id", fallback["id"])),
+                "nombre": str(hopper.get("nombre", fallback["nombre"])),
+                "motor_pin": int(hopper.get("motor_pin", fallback["motor_pin"])),
+                "sensor_pin": int(hopper.get("sensor_pin", fallback["sensor_pin"])),
+                "calibracion": dict(
+                    hopper.get("calibracion", fallback.get("calibracion", {}))
+                    if isinstance(hopper.get("calibracion", {}), dict)
+                    else fallback.get("calibracion", {})
+                ),
+            }
+        )
+    while len(normalized) < 3:
+        normalized.append(dict(DEFAULT_TOLVAS[len(normalized)]))
+    with _tolvas_lock:
+        _tolvas = normalized
+        _ventana_pulso_tardio_por_tolva = {}
+        for idx, tolva in enumerate(_tolvas):
+            pulso_min, pulso_max, _ = _calibracion_tolva(tolva)
+            _ventana_pulso_tardio_por_tolva[idx] = max(0.15, min(2.0, pulso_max + pulso_min))
+
+
+def _calibracion_tolva(tolva):
+    calibracion = tolva.get("calibracion", {})
+    if not isinstance(calibracion, dict):
+        calibracion = {}
+    try:
+        pulso_min = float(calibracion.get("pulso_min_s", PULSO_MIN))
+    except (TypeError, ValueError):
+        pulso_min = PULSO_MIN
+    try:
+        pulso_max = float(calibracion.get("pulso_max_s", PULSO_MAX))
+    except (TypeError, ValueError):
+        pulso_max = PULSO_MAX
+    try:
+        timeout_motor = float(calibracion.get("timeout_motor_s", TIMEOUT_MOTOR))
+    except (TypeError, ValueError):
+        timeout_motor = TIMEOUT_MOTOR
+    pulso_min = max(pulso_min, 0.001)
+    pulso_max = max(pulso_max, pulso_min)
+    timeout_motor = max(timeout_motor, 0.1)
+    return pulso_min, pulso_max, timeout_motor
+
+
+def _actualizar_auto_calibracion_tardia(tolva_idx, delay_s):
+    """
+    Ajusta automáticamente la ventana de pulso tardío para una tolva
+    según el retardo real observado luego del corte del motor.
+    """
+    if tolva_idx is None:
+        return
+    with _tolvas_lock:
+        actual = float(_ventana_pulso_tardio_por_tolva.get(tolva_idx, 0.3))
+        sugerida = max(0.15, min(2.0, delay_s * 1.35))
+        if sugerida > actual:
+            _ventana_pulso_tardio_por_tolva[tolva_idx] = sugerida
+        else:
+            # convergencia suave para no crecer indefinidamente
+            _ventana_pulso_tardio_por_tolva[tolva_idx] = max(0.15, (actual * 0.98) + (sugerida * 0.02))
+
+
+def _setup_gpio_tolvas():
+    GPIO.setmode(GPIO.BCM)
+    for tolva in _tolvas:
+        GPIO.setup(tolva["sensor_pin"], GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(tolva["motor_pin"], GPIO.OUT)
+        GPIO.output(tolva["motor_pin"], GPIO.LOW)
+
+
+def recargar_tolvas_desde_config():
+    """Recarga configuración de tolvas/calibración en caliente."""
+    _cargar_tolvas_desde_config()
+
+
+def iniciar_auto_calibracion_tolva(tolva_id, samples=32):
+    """
+    Inicia auto-calibración para una tolva:
+    - agrega fichas pendientes para forzar dispensado
+    - mide delay de salida y duración de pulsos
+    - persiste calibración calculada en config
+    """
+    global _tolva_seleccionada_idx
+    try:
+        target_samples = max(3, int(samples))
+    except (TypeError, ValueError):
+        target_samples = 32
+
+    with _tolvas_lock:
+        if _auto_calibration.get("running"):
+            return False, "Ya hay una auto-calibración en curso."
+        if shared_buffer.get_fichas_restantes() > 0 or shared_buffer.get_motor_activo():
+            return False, "Esperá a que termine la dispensación actual para calibrar."
+        idx = next((i for i, t in enumerate(_tolvas) if t["id"] == tolva_id), None)
+        if idx is None:
+            return False, "Tolva no encontrada."
+
+        _tolva_seleccionada_idx = idx
+        _auto_calibration.update(
+            {
+                "running": True,
+                "finished": False,
+                "target_tolva_id": tolva_id,
+                "target_samples": target_samples,
+                "counted_samples": 0,
+                "total_counted_samples": 0,
+                "rounds_total": 1,
+                "current_round": 1,
+                "round_results": [],
+                "first_pulse_delays": [],
+                "pulse_durations": [],
+                "motor_on_ts": None,
+                "pulse_open_ts": None,
+                "start_ts": time.time(),
+                "max_duration_s": 45.0,
+                "error": "",
+                "result": {},
+            }
+        )
+
+    shared_buffer.agregar_fichas(target_samples)
+    if gui_actualizar_funcion:
+        try:
+            gui_actualizar_funcion()
+        except Exception:
+            pass
+    return True, f"Auto-calibración iniciada para tolva {tolva_id} con {target_samples} fichas."
+
+
+def _finalizar_auto_calibracion(success=True, error_msg=""):
+    continuar_siguiente_ronda = False
+    fichas_a_agregar = 0
+    with _tolvas_lock:
+        tolva_id = _auto_calibration.get("target_tolva_id")
+        delays = list(_auto_calibration.get("first_pulse_delays", []))
+        durations = list(_auto_calibration.get("pulse_durations", []))
+        idx = next((i for i, t in enumerate(_tolvas) if t["id"] == tolva_id), None)
+
+        if not success or idx is None or not durations:
+            _auto_calibration.update(
+                {
+                    "running": False,
+                    "finished": True,
+                    "error": error_msg or "No se pudieron medir pulsos suficientes.",
+                    "result": {},
+                }
+            )
+            return
+
+        min_d = min(durations)
+        max_d = max(durations)
+        max_delay = max(delays) if delays else max_d
+        pulso_min_s = max(0.01, min_d * 0.8)
+        pulso_max_s = max(pulso_min_s + 0.01, max_d * 1.30)
+        timeout_motor_s = max(0.4, max_delay * 2.2)
+        result = {
+            "pulso_min_s": round(pulso_min_s, 4),
+            "pulso_max_s": round(pulso_max_s, 4),
+            "timeout_motor_s": round(timeout_motor_s, 4),
+            "samples": len(durations),
+        }
+        _auto_calibration.setdefault("round_results", []).append(dict(result))
+
+        current_round = int(_auto_calibration.get("current_round", 1))
+        rounds_total = int(_auto_calibration.get("rounds_total", 1))
+        target_samples = int(_auto_calibration.get("target_samples", 0))
+        if current_round < rounds_total:
+            _auto_calibration.update(
+                {
+                    "current_round": current_round + 1,
+                    "counted_samples": 0,
+                    "first_pulse_delays": [],
+                    "pulse_durations": [],
+                    "motor_on_ts": None,
+                    "pulse_open_ts": None,
+                    "start_ts": time.time(),
+                    "error": "",
+                    "result": {
+                        "ronda_completada": current_round,
+                        "rondas_totales": rounds_total,
+                        **result,
+                    },
+                }
+            )
+            continuar_siguiente_ronda = True
+            fichas_a_agregar = max(0, target_samples)
+
+    if continuar_siguiente_ronda:
+        if fichas_a_agregar > 0:
+            shared_buffer.agregar_fichas(fichas_a_agregar)
+        return
+
+    with _tolvas_lock:
+        rounds = _auto_calibration.get("round_results", [])
+        if rounds:
+            avg_min = sum(float(r.get("pulso_min_s", 0.0)) for r in rounds) / len(rounds)
+            avg_max = sum(float(r.get("pulso_max_s", 0.0)) for r in rounds) / len(rounds)
+            avg_timeout = sum(float(r.get("timeout_motor_s", 0.0)) for r in rounds) / len(rounds)
+            total_samples = sum(int(r.get("samples", 0)) for r in rounds)
+            result = {
+                "pulso_min_s": round(max(0.01, avg_min), 4),
+                "pulso_max_s": round(max(max(0.01, avg_min), avg_max), 4),
+                "timeout_motor_s": round(max(0.4, avg_timeout), 4),
+                "samples": total_samples,
+                "rounds": len(rounds),
+            }
+
+        # Aplica en memoria
+        calibracion = _tolvas[idx].setdefault("calibracion", {})
+        calibracion.update(result)
+        _ventana_pulso_tardio_por_tolva[idx] = max(0.15, min(2.0, result["pulso_max_s"] + result["pulso_min_s"]))
+
+    # Persiste en config fuera del lock
+    try:
+        cfg = cargar_configuracion()
+        hoppers = cfg.get("maquina", {}).get("hoppers", [])
+        for hopper in hoppers:
+            if isinstance(hopper, dict) and int(hopper.get("id", 0)) == int(tolva_id):
+                cal = hopper.get("calibracion", {})
+                if not isinstance(cal, dict):
+                    cal = {}
+                cal.update(result)
+                hopper["calibracion"] = cal
+                break
+        guardar_configuracion(cfg)
+    except Exception as exc:
+        error_msg = f"Calibró en memoria pero falló guardado: {exc}"
+
+    with _tolvas_lock:
+        _auto_calibration.update(
+            {
+                "running": False,
+                "finished": True,
+                "error": error_msg,
+                "result": result,
+            }
+        )
+
+
+def get_auto_calibration_status():
+    with _tolvas_lock:
+        return dict(_auto_calibration)
+
+
+def get_tolvas_status():
+    with _tolvas_lock:
+        selected_id = _tolvas[_tolva_seleccionada_idx]["id"]
+        jammed_ids = set(_tolvas_trabadas)
+        calib = dict(_auto_calibration)
+        snapshot = []
+        for tolva in _tolvas:
+            running_here = bool(calib.get("running") and calib.get("target_tolva_id") == tolva["id"])
+            progress = 0
+            if running_here and calib.get("target_samples", 0):
+                total_target = max(1, int(calib.get("target_samples", 0)) * max(1, int(calib.get("rounds_total", 1))))
+                total_done = int(calib.get("total_counted_samples", 0))
+                progress = int((total_done * 100) / total_target)
+            snapshot.append(
+                {
+                    "id": tolva["id"],
+                    "nombre": tolva["nombre"],
+                    "seleccionada": tolva["id"] == selected_id,
+                    "trabada": tolva["id"] in jammed_ids,
+                    "calibrando": running_here,
+                    "calibracion_progreso": progress,
+                }
+            )
+        return snapshot
+
+
+def seleccionar_tolva(offset):
+    global _tolva_seleccionada_idx
+    with _tolvas_lock:
+        _tolva_seleccionada_idx = (_tolva_seleccionada_idx + offset) % len(_tolvas)
+    if gui_actualizar_funcion:
+        try:
+            gui_actualizar_funcion()
+        except Exception as exc:
+            print(f"[ERROR] GUI actualizar al cambiar tolva falló: {exc}")
+
+
+def seleccionar_tolva_siguiente():
+    seleccionar_tolva(1)
+
+
+def seleccionar_tolva_anterior():
+    seleccionar_tolva(-1)
+
+
+def _seleccionar_siguiente_tolva_disponible():
+    """
+    Si la tolva seleccionada está trabada, intenta mover la selección
+    a la siguiente tolva no trabada (circular).
+    Debe llamarse con _tolvas_lock ya tomado.
+    """
+    global _tolva_seleccionada_idx
+    if not _tolvas:
+        return False
+
+    total = len(_tolvas)
+    start_idx = _tolva_seleccionada_idx
+
+    for step in range(1, total + 1):
+        idx = (start_idx + step) % total
+        tolva_id = _tolvas[idx]["id"]
+        if tolva_id not in _tolvas_trabadas:
+            if idx != _tolva_seleccionada_idx:
+                _tolva_seleccionada_idx = idx
+                return True
+            return False
+    return False
 
 # ----------CONEXION CON GUI Y LOGICA PARA GUARDAR REGISTROS---------------
 
@@ -166,16 +538,6 @@ def realizar_cierre():
 
 # --- FUNCIONES PARA REGISTRAR CALLBACKS ---
 
-# --- CONFIGURACIÓN GPIO ---
-GPIO.setmode(GPIO.BCM)
-
-# Configurar sensor como entrada
-GPIO.setup(ENTHOPER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-
-# Configurar motor como salida
-GPIO.setup(MOTOR_PIN, GPIO.OUT)
-GPIO.output(MOTOR_PIN, GPIO.LOW)
-
 def enviar_datos_venta_servidor():
     """
     NOTA: Esta función se llama cuando el motor se detiene.
@@ -212,125 +574,295 @@ def controlar_motor():
     - ⚠️ PROTECCIÓN ANTI-QUEMADO: Detiene motor si no dispensa ficha en 2 segundos
     - La GUI lee directamente las variables globales (thread-safe via funciones get)
     """
-    global bloqueo_emergencia
-    estado_anterior_sensor = GPIO.input(ENTHOPER)
-    ficha_en_sensor = False  # Flag para detectar pulso completo
-    tiempo_inicio_pulso = 0
-    tiempo_inicio_motor = 0  # Marca de tiempo cuando arranca el motor
-    motor_con_timeout_activo = False  # Flag para control de timeout
+    global bloqueo_emergencia, _ultima_tolva_motor_idx, _ultimo_apagado_motor_ts
 
-    print("[CORE] Iniciando hilo de control de motor con protección anti-quemado")
+    with _tolvas_lock:
+        tolvas_local = [dict(t) for t in _tolvas]
+
+    estado_anterior_sensor = {t["id"]: GPIO.input(t["sensor_pin"]) for t in tolvas_local}
+    ficha_en_sensor = {t["id"]: False for t in tolvas_local}
+    tiempo_inicio_pulso = {t["id"]: 0.0 for t in tolvas_local}
+    tiempo_inicio_motor = 0.0
+    motor_con_timeout_activo = False
+    motor_tolva_idx = None
+
+    print("[CORE] Iniciando hilo de control de motor multi-tolva con protección anti-quemado")
 
     while True:
-      try:
-        # Procesar comandos desde la GUI
-        shared_buffer.process_gui_commands()
-
-        # Control del motor basado en fichas_restantes
-        if shared_buffer.get_fichas_restantes() > 0 and not bloqueo_emergencia:
-            if not shared_buffer.get_motor_activo():
-                GPIO.output(MOTOR_PIN, GPIO.HIGH)
-                shared_buffer.set_motor_activo(True)
-                tiempo_inicio_motor = time.time()
-                motor_con_timeout_activo = True
-                print(f"[MOTOR ON] Fichas pendientes: {shared_buffer.get_fichas_restantes()}")
-            
-            elif motor_con_timeout_activo:
-                tiempo_motor_activo = time.time() - tiempo_inicio_motor
-                if tiempo_motor_activo > TIMEOUT_MOTOR:
-                    GPIO.output(MOTOR_PIN, GPIO.LOW)
-                    shared_buffer.set_motor_activo(False)
-                    motor_con_timeout_activo = False
-                    bloqueo_emergencia = True
-
-                    fichas_pendientes = shared_buffer.get_fichas_restantes()
-                    print("=" * 60)
-                    print("⚠️  [EMERGENCIA - MOTOR TRABADO] ⚠️")
-                    print("=" * 60)
-                    print(f"Tiempo transcurrido: {tiempo_motor_activo:.1f}s (límite: {TIMEOUT_MOTOR}s)")
-                    print(f"Fichas pendientes de dispensar: {fichas_pendientes}")
-                    print("ACCIÓN REQUERIDA:")
-                    print("  1. REVISAR MECANISMO - Posible atasco o collar enganchado")
-                    print("  2. LIBERAR OBSTRUCCIÓN manualmente")
-                    print("  3. Presionar botón de expendio nuevamente para reintentar")
-                    print(f"  4. Verificar que salgan las {fichas_pendientes} fichas restantes")
-                    print("=" * 60)
-                    print("IMPORTANTE: Las fichas NO fueron resetadas para evitar")
-                    print("            descuadres en el cierre de caja.")
-                    print("=" * 60)
-
-                    if gui_alerta_motor_funcion:
-                        try:
-                            gui_alerta_motor_funcion(fichas_pendientes)
-                        except Exception as e:
-                            print(f"[ERROR] GUI alerta motor falló: {e}")
-
-                    if gui_actualizar_funcion:
-                        try:
-                            gui_actualizar_funcion()
-                        except Exception as e:
-                            print(f"[ERROR] GUI actualizar falló: {e}")
-        else:
-            if shared_buffer.get_motor_activo():
-                GPIO.output(MOTOR_PIN, GPIO.LOW)
-                shared_buffer.set_motor_activo(False)
-                motor_con_timeout_activo = False
-                print("[MOTOR OFF] Todas las fichas expendidas")
-                threading.Thread(target=enviar_datos_venta_servidor, daemon=True).start()
-
-        # Leer estado actual del sensor
-        estado_actual_sensor = GPIO.input(ENTHOPER)
-        tiempo_actual = time.time()
-
-        # Máquina de estados para detección de pulso completo
-        if not ficha_en_sensor:
-            if estado_anterior_sensor == GPIO.HIGH and estado_actual_sensor == GPIO.LOW:
-                ficha_en_sensor = True
-                tiempo_inicio_pulso = tiempo_actual
-
-                if shared_buffer.get_fichas_restantes() > 0:
-                    shared_buffer.decrementar_fichas_restantes()
-                    tiempo_inicio_motor = time.time()
-                    print(f"✅ [FICHA DETECTADA - CORTADO] Restantes: {shared_buffer.get_fichas_restantes()}")
-
-                    try:
-                        actualizar_registro("ficha", 1)
-                    except Exception as e:
-                        print(f"[ERROR] actualizar_registro falló (motor continúa): {e}")
-
-                    if gui_actualizar_funcion:
-                        try:
-                            gui_actualizar_funcion()
-                        except Exception as e:
-                            print(f"[ERROR] GUI actualizar falló: {e}")
-                else:
-                    print("[ADVERTENCIA] Sensor activado pero contador en 0")
-        else:
-            if estado_actual_sensor == GPIO.HIGH:
-                duracion_pulso = tiempo_actual - tiempo_inicio_pulso
-                ficha_en_sensor = False
-
-                if duracion_pulso < PULSO_MIN:
-                    print(f"[RUIDO POSIBLE] Pulso muy corto: {duracion_pulso*1000:.1f}ms (Ya contada)")
-                elif duracion_pulso > PULSO_MAX:
-                    print(f"[ADVERTENCIA] Pulso muy largo: {duracion_pulso*1000:.1f}ms")
-
-        estado_anterior_sensor = estado_actual_sensor
-        time.sleep(0.005)
-
-      except Exception as e:
-        # El loop del motor NUNCA debe morir. Cualquier excepción se loga y se continúa.
-        print(f"[MOTOR LOOP ERROR - CONTINUANDO] {type(e).__name__}: {e}")
         try:
-            GPIO.output(MOTOR_PIN, GPIO.LOW)
-            shared_buffer.set_motor_activo(False)
-        except:
-            pass
-        time.sleep(0.1)
+            shared_buffer.process_gui_commands()
+            should_abort_calibration = False
+            should_finalize_calibration_no_pending = False
+            with _tolvas_lock:
+                if _auto_calibration.get("running"):
+                    started = float(_auto_calibration.get("start_ts", 0.0) or 0.0)
+                    max_duration = float(_auto_calibration.get("max_duration_s", 45.0) or 45.0)
+                    if started > 0 and (time.time() - started) > max_duration:
+                        should_abort_calibration = True
+                    else:
+                        target_samples = int(_auto_calibration.get("target_samples", 0) or 0)
+                        counted_samples = int(_auto_calibration.get("counted_samples", 0) or 0)
+                        if (
+                            target_samples > 0
+                            and counted_samples >= target_samples
+                            and shared_buffer.get_fichas_restantes() <= 0
+                            and not shared_buffer.get_motor_activo()
+                        ):
+                            # Evita quedar colgado esperando un pulso final de cierre.
+                            should_finalize_calibration_no_pending = True
+
+            if should_abort_calibration:
+                _finalizar_auto_calibracion(success=False, error_msg="Timeout de auto-calibración (sin muestras suficientes).")
+            elif should_finalize_calibration_no_pending:
+                _finalizar_auto_calibracion(success=True)
+
+            with _tolvas_lock:
+                tolvas_local = [dict(t) for t in _tolvas]
+                selected_idx = _tolva_seleccionada_idx
+                selected_tolva = tolvas_local[selected_idx]
+            _, _, timeout_motor_tolva = _calibracion_tolva(selected_tolva)
+
+            # Control del motor basado en fichas_restantes
+            if shared_buffer.get_fichas_restantes() > 0 and not bloqueo_emergencia:
+                if (not shared_buffer.get_motor_activo()) or (motor_tolva_idx != selected_idx):
+                    # Apagar todos los motores para evitar doble activación accidental
+                    for tolva in tolvas_local:
+                        GPIO.output(tolva["motor_pin"], GPIO.LOW)
+
+                    GPIO.output(selected_tolva["motor_pin"], GPIO.HIGH)
+                    shared_buffer.set_motor_activo(True)
+                    motor_tolva_idx = selected_idx
+                    _ultima_tolva_motor_idx = selected_idx
+                    tiempo_inicio_motor = time.time()
+                    motor_con_timeout_activo = True
+                    with _tolvas_lock:
+                        if _auto_calibration.get("running") and _auto_calibration.get("target_tolva_id") == selected_tolva["id"]:
+                            _auto_calibration["motor_on_ts"] = time.time()
+                    print(
+                        f"[MOTOR ON] {selected_tolva['nombre']} | "
+                        f"Fichas pendientes: {shared_buffer.get_fichas_restantes()}"
+                    )
+
+                elif motor_con_timeout_activo:
+                    tiempo_motor_activo = time.time() - tiempo_inicio_motor
+                    if tiempo_motor_activo > timeout_motor_tolva:
+                        GPIO.output(selected_tolva["motor_pin"], GPIO.LOW)
+                        shared_buffer.set_motor_activo(False)
+                        motor_con_timeout_activo = False
+                        calibrating_here = False
+                        with _tolvas_lock:
+                            calibrating_here = bool(
+                                _auto_calibration.get("running")
+                                and _auto_calibration.get("target_tolva_id") == selected_tolva["id"]
+                            )
+
+                        if calibrating_here:
+                            # En calibración no hacemos fallback ni marcamos traba global.
+                            # Abortamos calibración y dejamos el sistema estable.
+                            shared_buffer.set_fichas_restantes(0)
+                            _finalizar_auto_calibracion(
+                                success=False,
+                                error_msg=(
+                                    f"Timeout durante auto-calibración en {selected_tolva['nombre']} "
+                                    f"({tiempo_motor_activo:.1f}s > {timeout_motor_tolva}s)."
+                                ),
+                            )
+                            print(
+                                "[AUTO-CALIBRACIÓN] Abortada por timeout de motor "
+                                f"en {selected_tolva['nombre']}."
+                            )
+                        else:
+                            bloqueo_emergencia = True
+
+                            with _tolvas_lock:
+                                _tolvas_trabadas.add(selected_tolva["id"])
+                                cambio_automatico = _seleccionar_siguiente_tolva_disponible()
+
+                            fichas_pendientes = shared_buffer.get_fichas_restantes()
+                            print("=" * 60)
+                            print("⚠️  [EMERGENCIA - MOTOR TRABADO] ⚠️")
+                            print("=" * 60)
+                            print(f"Tolva: {selected_tolva['nombre']}")
+                            print(f"Tiempo transcurrido: {tiempo_motor_activo:.1f}s (límite: {timeout_motor_tolva}s)")
+                            print(f"Fichas pendientes de dispensar: {fichas_pendientes}")
+                            if cambio_automatico:
+                                with _tolvas_lock:
+                                    nueva = _tolvas[_tolva_seleccionada_idx]["nombre"]
+                                print(f"[CORE] Cambio automático a {nueva} por traba de tolva.")
+                            print("=" * 60)
+
+                            if gui_alerta_motor_funcion:
+                                try:
+                                    gui_alerta_motor_funcion(fichas_pendientes)
+                                except Exception as e:
+                                    print(f"[ERROR] GUI alerta motor falló: {e}")
+
+                            if gui_actualizar_funcion:
+                                try:
+                                    gui_actualizar_funcion()
+                                except Exception as e:
+                                    print(f"[ERROR] GUI actualizar falló: {e}")
+            else:
+                if shared_buffer.get_motor_activo():
+                    for tolva in tolvas_local:
+                        GPIO.output(tolva["motor_pin"], GPIO.LOW)
+                    shared_buffer.set_motor_activo(False)
+                    _ultima_tolva_motor_idx = motor_tolva_idx
+                    _ultimo_apagado_motor_ts = time.time()
+                    motor_tolva_idx = None
+                    motor_con_timeout_activo = False
+                    print("[MOTOR OFF] Todas las fichas expendidas")
+                    threading.Thread(target=enviar_datos_venta_servidor, daemon=True).start()
+
+            # Leer sensores de todas las tolvas
+            tiempo_actual = time.time()
+            for idx, tolva in enumerate(tolvas_local):
+                tolva_id = tolva["id"]
+                sensor_pin = tolva["sensor_pin"]
+                pulso_min_tolva, pulso_max_tolva, _ = _calibracion_tolva(tolva)
+                estado_actual_sensor = GPIO.input(sensor_pin)
+
+                if not ficha_en_sensor[tolva_id]:
+                    if estado_anterior_sensor[tolva_id] == GPIO.HIGH and estado_actual_sensor == GPIO.LOW:
+                        ficha_en_sensor[tolva_id] = True
+                        tiempo_inicio_pulso[tolva_id] = tiempo_actual
+                        with _tolvas_lock:
+                            if _auto_calibration.get("running") and _auto_calibration.get("target_tolva_id") == tolva_id:
+                                motor_on_ts = _auto_calibration.get("motor_on_ts")
+                                if motor_on_ts:
+                                    _auto_calibration["first_pulse_delays"].append(max(0.0, tiempo_actual - float(motor_on_ts)))
+                                _auto_calibration["pulse_open_ts"] = tiempo_actual
+
+                        # Si estaba trabada, al primer pulso la consideramos destrabada
+                        with _tolvas_lock:
+                            if tolva_id in _tolvas_trabadas:
+                                _tolvas_trabadas.remove(tolva_id)
+                                print(f"[CORE] {tolva['nombre']} destrabada por pulso de sensor.")
+                                if gui_actualizar_funcion:
+                                    try:
+                                        gui_actualizar_funcion()
+                                    except Exception as e:
+                                        print(f"[ERROR] GUI actualizar falló: {e}")
+
+                        # Contamos ficha si proviene de la tolva activa.
+                        # Los pulsos tardíos (motor ya apagado) NO se cuentan:
+                        # se usan solo para auto-calibrar la ventana del sensor.
+                        counted = False
+                        calibrated_late_pulse = False
+                        if motor_tolva_idx == idx and shared_buffer.get_fichas_restantes() > 0:
+                            shared_buffer.decrementar_fichas_restantes()
+                            tiempo_inicio_motor = time.time()
+                            counted = True
+                        else:
+                            with _tolvas_lock:
+                                ventana_tardia = float(_ventana_pulso_tardio_por_tolva.get(idx, 0.3))
+                            delay_off = time.time() - float(_ultimo_apagado_motor_ts or 0.0)
+                            if (
+                                shared_buffer.get_fichas_restantes() <= 0
+                                and _ultima_tolva_motor_idx == idx
+                                and delay_off >= 0.0
+                                and delay_off <= ventana_tardia
+                            ):
+                                _actualizar_auto_calibracion_tardia(idx, delay_off)
+                                calibrated_late_pulse = True
+
+                        if counted or calibrated_late_pulse:
+                            if calibrated_late_pulse:
+                                print(
+                                    f"[AUTO-CALIBRACIÓN] Pulso tardío detectado en {tolva['nombre']} "
+                                    f"(delay={delay_off:.3f}s, no contado)."
+                                )
+                            if counted:
+                                print(
+                                    f"✅ [FICHA DETECTADA - {tolva['nombre']}] "
+                                    f"Restantes: {shared_buffer.get_fichas_restantes()}"
+                                )
+
+                                # Corte por evento: al detectar la ficha objetivo (restantes = 0),
+                                # apagamos motor inmediatamente sin esperar otro ciclo del loop.
+                                if (
+                                    shared_buffer.get_fichas_restantes() <= 0
+                                    and shared_buffer.get_motor_activo()
+                                    and motor_tolva_idx == idx
+                                ):
+                                    for tolva_off in tolvas_local:
+                                        GPIO.output(tolva_off["motor_pin"], GPIO.LOW)
+                                    shared_buffer.set_motor_activo(False)
+                                    _ultima_tolva_motor_idx = idx
+                                    _ultimo_apagado_motor_ts = time.time()
+                                    motor_tolva_idx = None
+                                    motor_con_timeout_activo = False
+                                    print(f"[MOTOR OFF EVENTO] Objetivo alcanzado en {tolva['nombre']}")
+                                    threading.Thread(target=enviar_datos_venta_servidor, daemon=True).start()
+
+                            if counted:
+                                try:
+                                    actualizar_registro("ficha", 1)
+                                except Exception as e:
+                                    print(f"[ERROR] actualizar_registro falló (motor continúa): {e}")
+
+                            if gui_actualizar_funcion and counted:
+                                try:
+                                    gui_actualizar_funcion()
+                                except Exception as e:
+                                    print(f"[ERROR] GUI actualizar falló: {e}")
+                            if counted:
+                                with _tolvas_lock:
+                                    if _auto_calibration.get("running") and _auto_calibration.get("target_tolva_id") == tolva_id:
+                                        _auto_calibration["counted_samples"] = int(_auto_calibration.get("counted_samples", 0)) + 1
+                                        _auto_calibration["total_counted_samples"] = int(_auto_calibration.get("total_counted_samples", 0)) + 1
+                                        _auto_calibration["motor_on_ts"] = time.time()
+                else:
+                    if estado_actual_sensor == GPIO.HIGH:
+                        duracion_pulso = tiempo_actual - tiempo_inicio_pulso[tolva_id]
+                        ficha_en_sensor[tolva_id] = False
+                        should_finalize_calibration = False
+                        with _tolvas_lock:
+                            if _auto_calibration.get("running") and _auto_calibration.get("target_tolva_id") == tolva_id:
+                                pulse_open_ts = _auto_calibration.get("pulse_open_ts")
+                                if pulse_open_ts:
+                                    _auto_calibration["pulse_durations"].append(max(0.001, tiempo_actual - float(pulse_open_ts)))
+                                _auto_calibration["pulse_open_ts"] = None
+                                target_samples = int(_auto_calibration.get("target_samples", 0))
+                                counted_samples = int(_auto_calibration.get("counted_samples", 0))
+                                measured_samples = len(_auto_calibration.get("pulse_durations", []))
+                                if target_samples > 0 and counted_samples >= target_samples and measured_samples >= target_samples:
+                                    should_finalize_calibration = True
+
+                        if should_finalize_calibration:
+                            _finalizar_auto_calibracion(success=True)
+
+                        if duracion_pulso < pulso_min_tolva:
+                            print(
+                                f"[RUIDO POSIBLE] {tolva['nombre']} pulso muy corto: "
+                                f"{duracion_pulso*1000:.1f}ms"
+                            )
+                        elif duracion_pulso > pulso_max_tolva:
+                            print(
+                                f"[ADVERTENCIA] {tolva['nombre']} pulso muy largo: "
+                                f"{duracion_pulso*1000:.1f}ms"
+                            )
+
+                estado_anterior_sensor[tolva_id] = estado_actual_sensor
+
+            time.sleep(0.005)
+
+        except Exception as e:
+            # El loop del motor NUNCA debe morir. Cualquier excepción se loga y se continúa.
+            print(f"[MOTOR LOOP ERROR - CONTINUANDO] {type(e).__name__}: {e}")
+            try:
+                for tolva in tolvas_local:
+                    GPIO.output(tolva["motor_pin"], GPIO.LOW)
+                shared_buffer.set_motor_activo(False)
+            except Exception:
+                pass
+            time.sleep(0.1)
 
 # --- PROGRAMA PRINCIPAL ---
 def iniciar_sistema():
     """Inicializa el sistema de control de motor (sin GUI)"""
+    _cargar_tolvas_desde_config()
+    _setup_gpio_tolvas()
     hidratar_estado_compartido_desde_config()
     enviar_pulso()
 
@@ -344,7 +876,9 @@ def iniciar_sistema():
 def detener_sistema():
     """Apaga el motor y limpia GPIO"""
     _flush_registro()  # Asegurar que no queden datos sin guardar
-    GPIO.output(MOTOR_PIN, GPIO.LOW)
+    with _tolvas_lock:
+        for tolva in _tolvas:
+            GPIO.output(tolva["motor_pin"], GPIO.LOW)
     GPIO.cleanup()
     print("Sistema detenido")
 
@@ -355,7 +889,28 @@ class CoreController:
     Mantiene compatibilidad con la lógica actual basada en funciones.
     """
 
-    sensor_pin = ENTHOPER
+    @property
+    def sensor_pin(self):
+        with _tolvas_lock:
+            return _tolvas[_tolva_seleccionada_idx]["sensor_pin"]
+
+    def get_tolvas_status(self):
+        return get_tolvas_status()
+
+    def seleccionar_tolva_siguiente(self):
+        seleccionar_tolva_siguiente()
+
+    def seleccionar_tolva_anterior(self):
+        seleccionar_tolva_anterior()
+
+    def recargar_tolvas_desde_config(self):
+        recargar_tolvas_desde_config()
+
+    def iniciar_auto_calibracion_tolva(self, tolva_id, samples=32):
+        return iniciar_auto_calibracion_tolva(tolva_id, samples=samples)
+
+    def obtener_estado_auto_calibracion(self):
+        return get_auto_calibration_status()
 
     def register_gui_update(self, callback):
         registrar_gui_actualizar(callback)

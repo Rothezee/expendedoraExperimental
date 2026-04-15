@@ -16,39 +16,39 @@
     "valor_ficha": 1000.0,
     "device_id": "EXPENDEDORA_1",
     "contadores": {
-        "fichas_expendidas": 7,
-        "dinero_ingresado": 5000.0,
-        "promo1_contador": 1,
+        "fichas_expendidas": 0,
+        "dinero_ingresado": 0.0,
+        "promo1_contador": 0,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0,
         "fichas_devolucion": 0,
-        "fichas_normales": 2,
-        "fichas_promocion": 5,
+        "fichas_normales": 0,
+        "fichas_promocion": 0,
         "fichas_cambio": 0
     },
     "contadores_apertura": {
-        "fichas_expendidas": 7,
-        "dinero_ingresado": 5000.0,
-        "promo1_contador": 1,
+        "fichas_expendidas": 0,
+        "dinero_ingresado": 0.0,
+        "promo1_contador": 0,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0,
         "fichas_devolucion": 0,
-        "fichas_normales": 2,
-        "fichas_promocion": 5,
+        "fichas_normales": 0,
+        "fichas_promocion": 0,
         "fichas_cambio": 0
     },
     "contadores_parciales": {
-        "fichas_expendidas": 7,
-        "dinero_ingresado": 5000.0,
-        "promo1_contador": 1,
+        "fichas_expendidas": 0,
+        "dinero_ingresado": 0.0,
+        "promo1_contador": 0,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0,
         "fichas_devolucion": 0,
-        "fichas_normales": 2,
-        "fichas_promocion": 5,
+        "fichas_normales": 0,
+        "fichas_promocion": 0,
         "fichas_cambio": 0
     },
     "api": {
@@ -64,17 +64,63 @@
     },
     "maquina": {
         "codigo_hardware": "EXPENDEDORA_1",
-        "tipo_maquina": 1
+        "tipo_maquina": 1,
+        "hoppers": [
+            {
+                "id": 1,
+                "nombre": "Tolva 1",
+                "motor_pin": 24,
+                "sensor_pin": 16,
+                "calibracion": {
+                    "pulso_min_s": 0.0411,
+                    "pulso_max_s": 0.071,
+                    "timeout_motor_s": 3.5786
+                }
+            },
+            {
+                "id": 2,
+                "nombre": "Tolva 2",
+                "motor_pin": 25,
+                "sensor_pin": 17,
+                "calibracion": {
+                    "pulso_min_s": 0.05,
+                    "pulso_max_s": 0.5,
+                    "timeout_motor_s": 2.0
+                }
+            },
+            {
+                "id": 3,
+                "nombre": "Tolva 3",
+                "motor_pin": 23,
+                "sensor_pin": 27,
+                "calibracion": {
+                    "pulso_min_s": 0.05,
+                    "pulso_max_s": 0.5,
+                    "timeout_motor_s": 2.0
+                }
+            }
+        ]
     },
     "heartbeat": {
         "intervalo_s": 600
     },
     "mysql": {
-        "host": "localhost",
-        "port": 3306,
-        "user": "root",
-        "password": "",
-        "database": "sistemadeadministracion"
+        "active": "local",
+        "fallback_to_secondary": true,
+        "local": {
+            "host": "localhost",
+            "port": 3306,
+            "user": "root",
+            "password": "39090169",
+            "database": "sistemadeadministracion"
+        },
+        "production": {
+            "host": "localhost",
+            "port": 3306,
+            "user": "root",
+            "password": "",
+            "database": "sistemadeadministracion"
+        }
     },
     "updater": {
         "enabled": false,
@@ -90,5 +136,35 @@
             "registro.json",
             "buffer_state.json"
         ]
+    },
+    "operacion": {
+        "ultima_apertura_fecha": "2026-04-15"
+    },
+    "atajos": {
+        "promociones": {
+            "Promo 1": [
+                "<slash>",
+                "<KP_Divide>"
+            ],
+            "Promo 2": [
+                "<asterisk>",
+                "<KP_Multiply>",
+                "x",
+                "X"
+            ],
+            "Promo 3": [
+                "<minus>",
+                "<KP_Subtract>"
+            ]
+        }
+    },
+    "network_manager": {
+        "enabled": true,
+        "check_interval_s": 8,
+        "reconnect_after_failures": 3,
+        "backend_timeout_s": 3.0,
+        "internet_host": "8.8.8.8",
+        "backend_url": "https://maquinasbonus.com/",
+        "preferred_interface": ""
     }
 }

@@ -1,19 +1,27 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from datetime import datetime
 import requests
 from User_management import UserManagement
 from expendedora_core import CoreController
 import shared_buffer
 from infra.config_repository import ConfigRepository, DEFAULT_DNI_ADMIN
+from infra.report_repository_mysql import ReportRepositoryMySQL
 from services.counter_service import CounterService
+from services.network_manager_service import NetworkManagerService
 from services.session_service import SessionService
 
-urlCierres = "esp32_project/expendedora/insert_close_expendedora.php"  # URL DE CIERRES
+urlCierres = "AdministrationPanel/src/expendedora/insert_close_expendedora.php"  # URL DE CIERRES
 urlDatos = "esp32_project/expendedora/insert_data_expendedora.php"  # URL DE REPORTES
-urlSubcierre = "esp32_project/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES
+urlSubcierre = "AdministrationPanel/src/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES
 DNS = "https://maquinasbonus.com/"  # DNS servidor
 DNSLocal = "http://127.0.0.1/"  # DNS servidor local
+
+DEFAULT_PROMO_HOTKEYS = {
+    "Promo 1": ["<slash>", "<KP_Divide>"],
+    "Promo 2": ["<asterisk>", "<KP_Multiply>", "x", "X"],
+    "Promo 3": ["<minus>", "<KP_Subtract>"],
+}
 
 import threading as _threading
 
@@ -76,6 +84,23 @@ class ExpendedoraGUI:
         self.dni_admin = DEFAULT_DNI_ADMIN
         self.api_config = {}
         self.heartbeat_intervalo_s = 600
+        self.maquina_hoppers = []
+        self.operacion_config = {"ultima_apertura_fecha": ""}
+        self.atajos_promociones = {k: list(v) for k, v in DEFAULT_PROMO_HOTKEYS.items()}
+        self.network_manager_cfg = {
+            "enabled": True,
+            "check_interval_s": 8,
+            "reconnect_after_failures": 3,
+            "backend_timeout_s": 3.0,
+            "internet_host": "8.8.8.8",
+            "backend_url": "",
+            "preferred_interface": "",
+        }
+        self._promo_binding_candidates = set()
+        self._entries_operativos = []
+        self._network_status_ui = {}
+        self.network_service = NetworkManagerService(self.config_repository)
+        self.report_repository = ReportRepositoryMySQL(self.config_repository)
 
         # Contadores de la página principal
         self.contadores = self.counter_service.default_counters()
@@ -121,13 +146,41 @@ class ExpendedoraGUI:
         shared_buffer.set_gui_update_callback(self.sincronizar_desde_core)
 
         # Header
-        self.header_frame = tk.Frame(root, bg=self.colors["header"], height=60)
+        self.header_frame = tk.Frame(root, bg=self.colors["header"], height=76)
         self.header_frame.pack(side="top", fill="x")
         # Línea separadora
         tk.Frame(root, bg="#E0E0E0", height=1).pack(side="top", fill="x")
 
-        tk.Label(self.header_frame, text="Expendedora Control", bg=self.colors["header"], fg=self.colors["text"], font=self.fonts["h2"]).pack(side="left", padx=20, pady=15)
-        tk.Label(self.header_frame, text=f"Usuario: {username}", bg=self.colors["header"], fg=self.colors["text"], font=self.fonts["body"]).pack(side="right", padx=20)
+        self.header_title_frame = tk.Frame(self.header_frame, bg=self.colors["header"])
+        self.header_title_frame.pack(side="left", fill="y", padx=20, pady=10)
+        tk.Label(
+            self.header_title_frame,
+            text="Expendedora Control",
+            bg=self.colors["header"],
+            fg=self.colors["text"],
+            font=self.fonts["h2"],
+        ).pack(anchor="w")
+        tk.Label(
+            self.header_title_frame,
+            text=f"Usuario: {username}",
+            bg=self.colors["header"],
+            fg="#7F8C8D",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w")
+
+        self.header_status_frame = tk.Frame(self.header_frame, bg=self.colors["header"])
+        self.header_status_frame.pack(side="right", padx=20, pady=10)
+        self.status_motor_lbl = tk.Label(self.header_status_frame, text="Motor: OFF", bg="#ECF0F1", fg="#2C3E50", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
+        self.status_motor_lbl.pack(side="left", padx=4)
+        self.status_tolva_lbl = tk.Label(self.header_status_frame, text="Tolva: -", bg="#ECF0F1", fg="#2C3E50", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
+        self.status_tolva_lbl.pack(side="left", padx=4)
+        self.status_pendientes_lbl = tk.Label(self.header_status_frame, text="Pendientes: 0", bg="#ECF0F1", fg="#2C3E50", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
+        self.status_pendientes_lbl.pack(side="left", padx=4)
+        self.status_last_event_lbl = tk.Label(self.header_status_frame, text="Últ. evento: -", bg="#ECF0F1", fg="#2C3E50", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
+        self.status_last_event_lbl.pack(side="left", padx=4)
+        self.status_network_lbl = tk.Label(self.header_status_frame, text="Red: ...", bg="#D6EAF8", fg="#1B4F72", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
+        self.status_network_lbl.pack(side="left", padx=4)
+        self._ultimo_evento_core_ts = None
         
 
         # Menú lateral
@@ -160,7 +213,28 @@ class ExpendedoraGUI:
         # Página principal
         self.main_frame, main_content = self.crear_contenedor_scrollable(root)
 
-        tk.Label(main_content, text="Panel de Control", font=self.fonts["h1"], bg=self.colors["bg"], fg=self.colors["text"]).pack(anchor="w", pady=(0, 20))
+        tk.Label(main_content, text="Panel de Control", font=self.fonts["h1"], bg=self.colors["bg"], fg=self.colors["text"]).pack(anchor="w", pady=(0, 12))
+        tk.Label(
+            main_content,
+            text="Estado rápido: verde activa, rojo trabada, rojo oscuro seleccionada trabada.",
+            font=("Segoe UI", 10),
+            bg=self.colors["bg"],
+            fg="#7F8C8D",
+        ).pack(anchor="w", pady=(0, 12))
+
+        # --- Estado de tolvas ---
+        self.tolvas_frame = tk.Frame(main_content, bg=self.colors["bg"])
+        self.tolvas_frame.pack(fill="x", pady=(0, 15))
+        tk.Label(
+            self.tolvas_frame,
+            text="Tolvas (← / → para seleccionar)",
+            font=("Segoe UI", 11, "bold"),
+            bg=self.colors["bg"],
+            fg="#7F8C8D",
+        ).pack(anchor="w", padx=10, pady=(0, 6))
+        self.tolva_cards = {}
+        self.tolvas_cards_row = tk.Frame(self.tolvas_frame, bg=self.colors["bg"])
+        self.tolvas_cards_row.pack(fill="x")
 
         # --- Cards de Fichas (Inicio) ---
         self.info_frame = tk.Frame(main_content, bg=self.colors["bg"])
@@ -168,23 +242,26 @@ class ExpendedoraGUI:
 
         self.contadores_labels = {}
         
-        def crear_card_contador(parent, key, titulo, color_borde, side="left", pady=0):
+        def crear_card_contador(parent, key, titulo, color_borde, side="left", pady=0, fixed_height=140, expand=True):
             card = tk.Frame(parent, bg=self.colors["card"])
-            card.pack(side=side, fill="both", expand=True, padx=10, pady=pady)
+            card.pack(side=side, fill="both", expand=expand, padx=10, pady=pady)
+            if fixed_height:
+                card.configure(height=fixed_height)
+                card.pack_propagate(False)
             
             # Borde superior de color
             tk.Frame(card, bg=color_borde, height=4).pack(fill="x", side="top")
             
-            content = tk.Frame(card, bg=self.colors["card"], padx=20, pady=20)
+            content = tk.Frame(card, bg=self.colors["card"], padx=20, pady=14)
             content.pack(fill="both", expand=True)
             
             tk.Label(content, text=titulo.upper(), font=("Segoe UI", 10, "bold"), fg="#7F8C8D", bg=self.colors["card"]).pack(anchor="w")
             label_valor = tk.Label(content, text=str(self.contadores[key]), font=self.fonts["big"], fg=self.colors["text"], bg=self.colors["card"])
-            label_valor.pack(anchor="w", pady=(5, 0))
+            label_valor.pack(anchor="w", pady=(8, 0))
             
             self.contadores_labels[key] = label_valor
 
-        crear_card_contador(self.info_frame, "fichas_restantes", "Fichas Restantes", self.colors["primary"])
+        crear_card_contador(self.info_frame, "fichas_restantes", "Fichas Restantes", self.colors["primary"], fixed_height=150)
         # crear_card_contador(self.info_frame, "fichas_expendidas", "Fichas Expendidas", self.colors["success"]) # Movido a Contadores
 
         # --- Helper para Botones Redondeados ---
@@ -239,6 +316,14 @@ class ExpendedoraGUI:
         # Botón Expender Redondeado
         btn_expender = crear_boton_redondeado(input_area, "Expender Ahora", self.procesar_expender_fichas, self.colors["warning"], "white", width=180, height=40)
         btn_expender.pack(side="left", padx=10)
+        tk.Label(
+            input_area,
+            text="Uso: venta normal.\nCarga fichas pendientes para entregar.",
+            font=("Segoe UI", 9),
+            bg=self.colors["card"],
+            fg="#7F8C8D",
+            justify="left",
+        ).pack(side="left", padx=(14, 0))
 
         # Sección de Devolución de Fichas
         self.devolucion_frame = tk.Frame(self.botones_frame, bg=self.colors["card"])
@@ -261,6 +346,14 @@ class ExpendedoraGUI:
         # Botón Devolución Redondeado
         btn_devolucion = crear_boton_redondeado(input_area_dev, "Devolver Fichas", self.procesar_devolucion_fichas, "#9B59B6", "white", width=180, height=40)
         btn_devolucion.pack(side="left", padx=10)
+        tk.Label(
+            input_area_dev,
+            text="Uso: reintegro al cliente.\nNo suma dinero ingresado.",
+            font=("Segoe UI", 9),
+            bg=self.colors["card"],
+            fg="#7F8C8D",
+            justify="left",
+        ).pack(side="left", padx=(14, 0))
 
         # Sección de Cambio de Fichas 
         self.cambio_frame = tk.Frame(self.botones_frame, bg=self.colors["card"])
@@ -283,6 +376,14 @@ class ExpendedoraGUI:
         # Botón Cambio Redondeado
         btn_cambio = crear_boton_redondeado(input_area_cambio, "Cambio Fichas", self.procesar_cambio_fichas, "#1ABC9C", "white", width=180, height=40)
         btn_cambio.pack(side="left", padx=10)
+        tk.Label(
+            input_area_cambio,
+            text="Uso: Cambio de fichas especiales. \no fichas adquiridas en Gruas",
+            font=("Segoe UI", 9),
+            bg=self.colors["card"],
+            fg="#7F8C8D",
+            justify="left",
+        ).pack(side="left", padx=(14, 0))
 
         # Herramientas rápidas de simulación en Inicio (solo admin)
         if self.username == "admin":
@@ -334,28 +435,27 @@ class ExpendedoraGUI:
         # Fila 1: Dinero
         row_dinero = tk.Frame(col_izq, bg=self.colors["bg"])
         row_dinero.pack(fill="x", pady=(0, 10))
-        crear_card_contador(row_dinero, "dinero_ingresado", "Dinero Ingresado", self.colors["success"])
-        crear_card_contador(row_dinero, "fichas_expendidas", "Fichas Expendidas", self.colors["success"])
+        crear_card_contador(row_dinero, "dinero_ingresado", "Dinero Ingresado", self.colors["success"], fixed_height=132)
+        crear_card_contador(row_dinero, "fichas_expendidas", "Fichas Expendidas", self.colors["success"], fixed_height=132)
 
         # Fila 2: Desglose Fichas (Normales y Promo)
         row_desglose1 = tk.Frame(col_izq, bg=self.colors["bg"])
         row_desglose1.pack(fill="x", pady=10)
-        crear_card_contador(row_desglose1, "fichas_normales", "Fichas Vendidas", self.colors["warning"])
-        crear_card_contador(row_desglose1, "fichas_promocion", "Fichas x Promo", self.colors["primary"])
+        crear_card_contador(row_desglose1, "fichas_normales", "Fichas Vendidas", self.colors["warning"], fixed_height=132)
+        crear_card_contador(row_desglose1, "fichas_promocion", "Fichas x Promo", self.colors["primary"], fixed_height=132)
 
         # Fila 3: Desglose Fichas (Devolución)
         row_desglose2 = tk.Frame(col_izq, bg=self.colors["bg"])
         row_desglose2.pack(fill="x", pady=10)
-        crear_card_contador(row_desglose2, "fichas_devolucion", "Fichas Devueltas", "#9B59B6")
-        crear_card_contador(row_desglose2, "fichas_cambio", "Fichas Cambio", "#1ABC9C")
-        tk.Frame(row_desglose2, bg=self.colors["bg"]).pack(side="left", fill="both", expand=True, padx=10) # Spacer
+        crear_card_contador(row_desglose2, "fichas_devolucion", "Fichas Devueltas", "#9B59B6", fixed_height=132)
+        crear_card_contador(row_desglose2, "fichas_cambio", "Fichas Cambio", "#1ABC9C", fixed_height=132)
 
         # --- Contenido Columna Derecha (Promociones en columna) ---
         tk.Label(col_der, text="Detalle Promociones", font=("Segoe UI", 12, "bold"), bg=self.colors["bg"], fg="#7F8C8D").pack(anchor="w", pady=(0, 10), padx=10)
         
-        crear_card_contador(col_der, "promo1_contador", "Promo 1 Usadas", self.colors["primary"], side="top", pady=5)
-        crear_card_contador(col_der, "promo2_contador", "Promo 2 Usadas", self.colors["primary"], side="top", pady=5)
-        crear_card_contador(col_der, "promo3_contador", "Promo 3 Usadas", self.colors["primary"], side="top", pady=5)
+        crear_card_contador(col_der, "promo1_contador", "Promo 1 Usadas", self.colors["primary"], side="top", pady=5, fixed_height=132, expand=False)
+        crear_card_contador(col_der, "promo2_contador", "Promo 2 Usadas", self.colors["primary"], side="top", pady=5, fixed_height=132, expand=False)
+        crear_card_contador(col_der, "promo3_contador", "Promo 3 Usadas", self.colors["primary"], side="top", pady=5, fixed_height=132, expand=False)
 
         # Página de simulación
         self.simulacion_frame, sim_content = self.crear_contenedor_scrollable(root)
@@ -373,6 +473,30 @@ class ExpendedoraGUI:
         
         for promo in ["Promo 1", "Promo 2", "Promo 3"]:
             crear_boton_redondeado(config_content, f"Configurar {promo}", lambda p=promo: self.configurar_promo(p), self.colors["primary"], "white", width=300).pack(pady=5)
+        crear_boton_redondeado(
+            config_content,
+            "Configurar atajos promociones",
+            self.configurar_atajos_promociones,
+            self.colors["primary"],
+            "white",
+            width=300,
+        ).pack(pady=5)
+        crear_boton_redondeado(
+            config_content,
+            "Calibrar sensores de tolvas",
+            self.configurar_calibracion_tolvas,
+            self.colors["warning"],
+            "white",
+            width=300,
+        ).pack(pady=5)
+        crear_boton_redondeado(
+            config_content,
+            "Configurar gestor de red",
+            self.configurar_gestor_red,
+            "#16A085",
+            "white",
+            width=300,
+        ).pack(pady=5)
         crear_boton_redondeado(config_content, "Configurar Valor de Ficha", self.configurar_valor_ficha, self.colors["primary"], "white", width=300).pack(pady=5)
         crear_boton_redondeado(config_content, "Configurar Codigo Hardware", self.configurar_device_id, self.colors["primary"], "white", width=300).pack(pady=5)
         crear_boton_redondeado(config_content, "Configurar DNI Admin", self.configurar_dni_admin, self.colors["primary"], "white", width=300).pack(pady=5)
@@ -382,8 +506,16 @@ class ExpendedoraGUI:
         
         tk.Label(reportes_content, text="Cierre y Reportes", font=self.fonts["h1"], bg=self.colors["bg"], fg=self.colors["danger"]).pack(anchor="w", pady=(0, 20))
         
-        crear_boton_redondeado(reportes_content, "Realizar Apertura", self.realizar_apertura, self.colors["primary"], "white", width=300).pack(pady=5)
         crear_boton_redondeado(reportes_content, "Realizar Cierre", self.realizar_cierre, self.colors["danger"], "white", width=300).pack(pady=5)
+        if self.username == "admin":
+            crear_boton_redondeado(
+                reportes_content,
+                "Ver reportes BD (admin)",
+                self.abrir_reportes_admin,
+                "#8E44AD",
+                "white",
+                width=300,
+            ).pack(pady=5)
 
         # Footer
         self.footer_frame = tk.Frame(root, bg=self.colors["sidebar"], height=30)
@@ -395,10 +527,7 @@ class ExpendedoraGUI:
         self.actualizar_fecha_hora()
 
         # --- ATAJOS DE TECLADO ---
-        def trigger_action(func):
-            """Ejecuta una función y previene el comportamiento por defecto"""
-            func()
-            return "break"
+        trigger_action = self._trigger_action
 
         # --- Configuración Global (Root) ---
 
@@ -409,20 +538,13 @@ class ExpendedoraGUI:
         self.root.bind('<Down>', lambda e: self.entry_cambio.focus_set())
         self.root.bind('<KP_Down>', lambda e: self.entry_cambio.focus_set())
 
-        # Promociones (Teclado Numérico y Normal)
-        # / (Dividir) -> Promo 1
-        self.root.bind('<slash>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
-        self.root.bind('<KP_Divide>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
+        # Selección de tolva con flechas laterales
+        self.root.bind('<Left>', lambda e: trigger_action(self.seleccionar_tolva_anterior))
+        self.root.bind('<Right>', lambda e: trigger_action(self.seleccionar_tolva_siguiente))
+        self.root.bind('<KP_Left>', lambda e: trigger_action(self.seleccionar_tolva_anterior))
+        self.root.bind('<KP_Right>', lambda e: trigger_action(self.seleccionar_tolva_siguiente))
 
-        # * (Multiplicar/x) -> Promo 2
-        self.root.bind('<asterisk>', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
-        self.root.bind('<KP_Multiply>', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
-        self.root.bind('x', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
-        self.root.bind('X', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
-
-        # - (Restar) -> Promo 3
-        self.root.bind('<minus>', lambda e: trigger_action(lambda: self.simular_promo("Promo 3")))
-        self.root.bind('<KP_Subtract>', lambda e: trigger_action(lambda: self.simular_promo("Promo 3")))
+        self.aplicar_atajos_promos_root()
 
         # --- Configuración de Inputs (Bloquear teclas especiales) ---
         def configurar_input_atajos(entry):
@@ -443,17 +565,8 @@ class ExpendedoraGUI:
                 # Down en el último podría ir al primero o nada
                 entry.bind('<Down>', lambda e: trigger_action(self.entry_fichas.focus_set)) # Loop al inicio
 
-            # Promos (Bloquear escritura de estos caracteres)
-            entry.bind('<slash>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
-            entry.bind('<KP_Divide>', lambda e: trigger_action(lambda: self.simular_promo("Promo 1")))
-            
-            entry.bind('<asterisk>', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
-            entry.bind('<KP_Multiply>', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
-            entry.bind('x', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
-            entry.bind('X', lambda e: trigger_action(lambda: self.simular_promo("Promo 2")))
-
-            entry.bind('<minus>', lambda e: trigger_action(lambda: self.simular_promo("Promo 3")))
-            entry.bind('<KP_Subtract>', lambda e: trigger_action(lambda: self.simular_promo("Promo 3")))
+            # Promos (bloquea escritura y dispara acción según config admin)
+            self.aplicar_atajos_promos_entry(entry)
 
             # Enter para confirmar (detectar qué campo está activo)
             def on_enter(event):
@@ -476,6 +589,19 @@ class ExpendedoraGUI:
         configurar_input_atajos(self.entry_fichas)
         configurar_input_atajos(self.entry_devolucion)
         configurar_input_atajos(self.entry_cambio)
+        self._entries_operativos = [self.entry_fichas, self.entry_devolucion, self.entry_cambio]
+        self.asegurar_apertura_automatica_del_dia()
+        self.actualizar_tolvas_gui()
+        self.actualizar_estado_operacion_ui()
+        self.actualizar_estado_red_ui(
+            {
+                "level": "UNKNOWN",
+                "message": "Inicializando red",
+                "active_connection": "",
+                "signal_percent": None,
+            }
+        )
+        self.network_service.start(callback=self._on_network_status_changed)
         self.mostrar_frame(self.main_frame)
 
         # Reiniciar el contador de sesión al iniciar la GUI
@@ -528,6 +654,89 @@ class ExpendedoraGUI:
         else:
             self.current_canvas = None
 
+    @staticmethod
+    def _trigger_action(func):
+        """Ejecuta una función y previene comportamiento por defecto."""
+        func()
+        return "break"
+
+    def _normalizar_atajos_promociones(self, hotkeys_cfg):
+        if not isinstance(hotkeys_cfg, dict):
+            hotkeys_cfg = {}
+        normalized = {}
+        for promo, default_keys in DEFAULT_PROMO_HOTKEYS.items():
+            raw = hotkeys_cfg.get(promo, default_keys)
+            if isinstance(raw, str):
+                raw = [raw]
+            if not isinstance(raw, list):
+                raw = list(default_keys)
+            clean = []
+            for key in raw:
+                key_str = str(key).strip()
+                if key_str and key_str not in clean:
+                    clean.append(key_str)
+            if not clean:
+                clean = list(default_keys)
+            normalized[promo] = clean
+        return normalized
+
+    def _actualizar_candidatos_atajos(self):
+        candidates = set()
+        for keys in DEFAULT_PROMO_HOTKEYS.values():
+            candidates.update(keys)
+        for keys in self.atajos_promociones.values():
+            candidates.update(keys)
+        self._promo_binding_candidates = candidates
+
+    @staticmethod
+    def _evento_a_tecla_bind(event):
+        """
+        Convierte un evento de tecla Tkinter al formato de bind usado por la app.
+        Ejemplos: "<KP_Divide>", "<minus>", "x", "X".
+        """
+        keysym = str(getattr(event, "keysym", "") or "").strip()
+        char = str(getattr(event, "char", "") or "")
+        if not keysym and not char:
+            return ""
+
+        special_names = {
+            "slash",
+            "minus",
+            "asterisk",
+            "KP_Divide",
+            "KP_Subtract",
+            "KP_Multiply",
+            "KP_Add",
+            "Return",
+            "KP_Enter",
+            "space",
+        }
+        if keysym.startswith("KP_") or keysym in special_names:
+            return f"<{keysym}>"
+
+        # Letras/números/teclas imprimibles simples.
+        if len(char) == 1 and char.isprintable() and not char.isspace():
+            return char
+
+        # Fallback para teclas especiales no imprimibles.
+        return f"<{keysym}>"
+
+    def aplicar_atajos_promos_root(self):
+        self._actualizar_candidatos_atajos()
+        for key in self._promo_binding_candidates:
+            self.root.unbind(key)
+        for promo, keys in self.atajos_promociones.items():
+            for key in keys:
+                self.root.bind(key, lambda e, promo_name=promo: self._trigger_action(lambda: self.simular_promo(promo_name)))
+
+    def aplicar_atajos_promos_entry(self, entry):
+        self._actualizar_candidatos_atajos()
+        for key in self._promo_binding_candidates:
+            entry.unbind(key)
+        for promo, keys in self.atajos_promociones.items():
+            for key in keys:
+                entry.bind(key, lambda e, promo_name=promo: self._trigger_action(lambda: self.simular_promo(promo_name)))
+
     def sincronizar_desde_core(self):
         """
         Llamada por el core cuando cambian los contadores.
@@ -540,6 +749,7 @@ class ExpendedoraGUI:
 
         def _actualizar():
             self._after_sincronizar_pendiente = False
+            self._ultimo_evento_core_ts = datetime.now()
 
             fichas_restantes_hw = shared_buffer.get_fichas_restantes()
             fichas_expendidas_hw = shared_buffer.get_fichas_expendidas()
@@ -557,6 +767,8 @@ class ExpendedoraGUI:
                 self.contadores["fichas_restantes"] = fichas_restantes_hw
                 self.actualizar_contadores_gui()
 
+            self.actualizar_tolvas_gui()
+
         try:
             self._after_sincronizar_pendiente = True
             self.root.after(0, _actualizar)
@@ -565,6 +777,231 @@ class ExpendedoraGUI:
             # El motor loop NO debe ejecutar código de Tkinter directamente.
             self._after_sincronizar_pendiente = False
             print(f"[GUI] root.after falló (se ignora, motor no afectado): {e}")
+
+    def seleccionar_tolva_siguiente(self):
+        self.core.seleccionar_tolva_siguiente()
+        self.actualizar_tolvas_gui()
+
+    def seleccionar_tolva_anterior(self):
+        self.core.seleccionar_tolva_anterior()
+        self.actualizar_tolvas_gui()
+
+    def mostrar_menu_tolva(self, tolva_id):
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(
+            label="Auto-calibrar tolva",
+            command=lambda tid=tolva_id: self.iniciar_auto_calibracion_tolva_ui(tid),
+        )
+        menu.add_command(
+            label="Calibración manual...",
+            command=self.configurar_calibracion_tolvas,
+        )
+        try:
+            x = self.root.winfo_pointerx()
+            y = self.root.winfo_pointery()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def iniciar_auto_calibracion_tolva_ui(self, tolva_id):
+        confirm = messagebox.askyesno(
+            "Auto-calibración",
+            f"Se va a auto-calibrar la tolva {tolva_id}.\n"
+            "El sistema va a dispensar fichas de prueba, medir tiempos y guardar calibración.\n\n"
+            "¿Continuar?",
+        )
+        if not confirm:
+            return
+
+        ok, msg = self.core.iniciar_auto_calibracion_tolva(tolva_id, samples=32)
+        if not ok:
+            messagebox.showwarning("Auto-calibración", msg)
+            return
+        self.actualizar_tolvas_gui()
+        self._poll_auto_calibracion_ui()
+
+    def _poll_auto_calibracion_ui(self):
+        estado = self.core.obtener_estado_auto_calibracion()
+        self.actualizar_tolvas_gui()
+        if estado.get("running"):
+            self.root.after(600, self._poll_auto_calibracion_ui)
+            return
+        if estado.get("finished"):
+            err = str(estado.get("error", "") or "").strip()
+            result = estado.get("result", {}) if isinstance(estado.get("result"), dict) else {}
+            if err:
+                messagebox.showwarning("Auto-calibración", f"Finalizó con aviso: {err}")
+            elif result:
+                messagebox.showinfo(
+                    "Auto-calibración",
+                    "Calibración guardada correctamente:\n"
+                    f"pulso_min_s={result.get('pulso_min_s')}\n"
+                    f"pulso_max_s={result.get('pulso_max_s')}\n"
+                    f"timeout_motor_s={result.get('timeout_motor_s')}\n"
+                    f"muestras={result.get('samples')}",
+                )
+            self.guardar_configuracion(inmediato=True)
+
+    def actualizar_tolvas_gui(self):
+        estados = self.core.get_tolvas_status()
+        if not estados:
+            return
+
+        for estado in estados:
+            tolva_id = estado["id"]
+            if tolva_id not in self.tolva_cards:
+                card = tk.Frame(self.tolvas_cards_row, bg="#ECEFF1", bd=0, highlightthickness=2)
+                card.pack(side="left", fill="both", expand=True, padx=10, pady=4)
+                if self.username == "admin":
+                    gear_btn = tk.Button(
+                        card,
+                        text="⚙",
+                        font=("Segoe UI", 10, "bold"),
+                        bg="#D5D8DC",
+                        fg="#2C3E50",
+                        bd=0,
+                        padx=6,
+                        pady=2,
+                        cursor="hand2",
+                        command=lambda tid=tolva_id: self.mostrar_menu_tolva(tid),
+                    )
+                    gear_btn.place(relx=1.0, x=-8, y=6, anchor="ne")
+                else:
+                    gear_btn = None
+                icon_canvas = tk.Canvas(card, width=86, height=58, bg="#ECEFF1", highlightthickness=0, bd=0)
+                icon_canvas.pack(padx=12, pady=(8, 2))
+                # Dibujo estilo hopper real: tolva superior, embudo y boquilla
+                back_panel_id = icon_canvas.create_rectangle(
+                    8, 7, 78, 17,
+                    fill="#AEB6BF", outline="#8D99A6", width=1
+                )
+                body_id = icon_canvas.create_polygon(
+                    14, 12, 72, 12, 62, 34, 24, 34,
+                    fill="#95A5A6", outline="#7F8C8D", width=2
+                )
+                window_id = icon_canvas.create_rectangle(
+                    28, 17, 58, 30,
+                    fill="#D6DBDF", outline="#A6ACAF", width=1
+                )
+                mouth_id = icon_canvas.create_polygon(
+                    35, 34, 51, 34, 48, 47, 38, 47,
+                    fill="#95A5A6", outline="#7F8C8D", width=2
+                )
+                base_id = icon_canvas.create_rectangle(
+                    31, 47, 55, 51,
+                    fill="#626F7A", outline="#525C66", width=1
+                )
+                coin1_id = icon_canvas.create_oval(
+                    32, 21, 40, 28,
+                    fill="#F1C40F", outline="#D4AC0D", width=1
+                )
+                coin2_id = icon_canvas.create_oval(
+                    43, 19, 51, 26,
+                    fill="#F1C40F", outline="#D4AC0D", width=1
+                )
+                coin3_id = icon_canvas.create_oval(
+                    42, 36, 49, 42,
+                    fill="#F1C40F", outline="#D4AC0D", width=1
+                )
+
+                nombre_label = tk.Label(card, text=estado["nombre"], font=("Segoe UI", 11, "bold"), bg="#ECEFF1", fg="#2C3E50")
+                nombre_label.pack(padx=12, pady=(2, 4))
+                estado_label = tk.Label(card, text="", font=("Segoe UI", 10), bg="#ECEFF1", fg="#2C3E50")
+                estado_label.pack(padx=12, pady=(0, 10))
+                self.tolva_cards[tolva_id] = {
+                    "card": card,
+                    "icon_canvas": icon_canvas,
+                    "back_panel_id": back_panel_id,
+                    "body_id": body_id,
+                    "window_id": window_id,
+                    "mouth_id": mouth_id,
+                    "base_id": base_id,
+                    "coin1_id": coin1_id,
+                    "coin2_id": coin2_id,
+                    "coin3_id": coin3_id,
+                    "nombre_label": nombre_label,
+                    "estado_label": estado_label,
+                    "gear_btn": gear_btn,
+                }
+
+            refs = self.tolva_cards[tolva_id]
+            card = refs["card"]
+            nombre_label = refs["nombre_label"]
+            estado_label = refs["estado_label"]
+            icon_canvas = refs["icon_canvas"]
+
+            if estado.get("calibrando"):
+                bg_color = "#5DADE2"
+                text_color = "white"
+                progreso = int(estado.get("calibracion_progreso", 0))
+                estado_text = f"CALIBRANDO {progreso}%"
+                icon_color = "#D6EAF8"
+                border_color = "#AED6F1"
+            elif estado["trabada"] and estado["seleccionada"]:
+                bg_color = "#C0392B"  # rojo más oscuro para "cursor" sobre tolva trabada
+                text_color = "white"
+                estado_text = "SELECCIONADA / TRABADA"
+                icon_color = "#F5B7B1"
+                border_color = "#F1948A"
+            elif estado["trabada"]:
+                bg_color = "#E74C3C"
+                text_color = "white"
+                estado_text = "TRABADA"
+                icon_color = "#FDEDEC"
+                border_color = "#F5B7B1"
+            elif estado["seleccionada"]:
+                bg_color = "#2ECC71"
+                text_color = "white"
+                estado_text = "ACTIVA"
+                icon_color = "#D5F5E3"
+                border_color = "#A9DFBF"
+            else:
+                bg_color = "#ECEFF1"
+                text_color = "#2C3E50"
+                estado_text = "INACTIVA"
+                icon_color = "#95A5A6"
+                border_color = "#7F8C8D"
+
+            card.config(bg=bg_color, highlightbackground=bg_color)
+            icon_canvas.config(bg=bg_color)
+            nombre_label.config(bg=bg_color, fg=text_color)
+            estado_label.config(bg=bg_color, fg=text_color, text=estado_text)
+            icon_canvas.itemconfig(refs["back_panel_id"], fill=icon_color, outline=border_color)
+            icon_canvas.itemconfig(refs["body_id"], fill=icon_color, outline=border_color)
+            icon_canvas.itemconfig(refs["window_id"], fill="#E5E8E8", outline=border_color)
+            icon_canvas.itemconfig(refs["mouth_id"], fill=icon_color, outline=border_color)
+            icon_canvas.itemconfig(refs["base_id"], fill="#626F7A", outline="#525C66")
+            icon_canvas.itemconfig(refs["coin1_id"], fill="#F1C40F", outline="#D4AC0D")
+            icon_canvas.itemconfig(refs["coin2_id"], fill="#F1C40F", outline="#D4AC0D")
+            icon_canvas.itemconfig(refs["coin3_id"], fill="#F1C40F", outline="#D4AC0D")
+
+        self.actualizar_estado_operacion_ui(estados_tolvas=estados)
+
+    def actualizar_estado_operacion_ui(self, estados_tolvas=None):
+        if estados_tolvas is None:
+            estados_tolvas = self.core.get_tolvas_status()
+
+        seleccionada = next((t for t in estados_tolvas if t.get("seleccionada")), None) if estados_tolvas else None
+        trabada = bool(seleccionada and seleccionada.get("trabada"))
+        motor_activo = bool(shared_buffer.get_motor_activo())
+        pendientes = int(shared_buffer.get_fichas_restantes())
+
+        if motor_activo:
+            self.status_motor_lbl.config(text="Motor: ON", bg="#2ECC71", fg="white")
+        else:
+            self.status_motor_lbl.config(text="Motor: OFF", bg="#ECF0F1", fg="#2C3E50")
+
+        if seleccionada:
+            if trabada:
+                self.status_tolva_lbl.config(text=f"Tolva: {seleccionada['nombre']} (TRABADA)", bg="#C0392B", fg="white")
+            else:
+                self.status_tolva_lbl.config(text=f"Tolva: {seleccionada['nombre']}", bg="#27AE60", fg="white")
+        else:
+            self.status_tolva_lbl.config(text="Tolva: -", bg="#ECF0F1", fg="#2C3E50")
+
+        self.status_pendientes_lbl.config(text=f"Pendientes: {pendientes}")
+        if self._ultimo_evento_core_ts:
+            self.status_last_event_lbl.config(text=f"Últ. evento: {self._ultimo_evento_core_ts.strftime('%H:%M:%S')}")
 
     def mostrar_alerta_motor_trabado(self, fichas_pendientes):
         """
@@ -596,6 +1033,24 @@ class ExpendedoraGUI:
         self.dni_admin = config.get("admin", {}).get("dni_admin", self.dni_admin)
         self.api_config = config.get("api", self.api_config)
         self.heartbeat_intervalo_s = config.get("heartbeat", {}).get("intervalo_s", self.heartbeat_intervalo_s)
+        self.maquina_hoppers = config.get("maquina", {}).get("hoppers", self.maquina_hoppers)
+        self.atajos_promociones = self._normalizar_atajos_promociones(config.get("atajos", {}).get("promociones", self.atajos_promociones))
+        self.operacion_config = config.get("operacion", self.operacion_config)
+        if not isinstance(self.operacion_config, dict):
+            self.operacion_config = {"ultima_apertura_fecha": ""}
+        self.network_manager_cfg = config.get("network_manager", self.network_manager_cfg)
+        if not isinstance(self.network_manager_cfg, dict):
+            self.network_manager_cfg = {
+                "enabled": True,
+                "check_interval_s": 8,
+                "reconnect_after_failures": 3,
+                "backend_timeout_s": 3.0,
+                "internet_host": "8.8.8.8",
+                "backend_url": "",
+                "preferred_interface": "",
+            }
+        if not str(self.network_manager_cfg.get("backend_url", "")).strip():
+            self.network_manager_cfg["backend_url"] = self._build_backend_probe_url()
         self.contadores = self.counter_service.ensure_schema(config.get("contadores", self.contadores))
         self.contadores_apertura = self.counter_service.ensure_schema(config.get("contadores_apertura", self.contadores_apertura))
         self.contadores_parciales = self.counter_service.ensure_schema(config.get("contadores_parciales", self.contadores_parciales))
@@ -620,19 +1075,594 @@ class ExpendedoraGUI:
     def _escribir_config_ahora(self):
         """Escribe config.json al disco (siempre en el hilo de Tkinter)."""
         codigo_hardware = self.codigo_hardware or self.device_id
-        base_config = {
-            "promociones": self.promociones,
-            "valor_ficha": self.valor_ficha,
-            "device_id": codigo_hardware,
-            "contadores": self.contadores,
-            "contadores_apertura": self.contadores_apertura,
-            "contadores_parciales": self.contadores_parciales,
-            "api": self.api_config,
-            "admin": {"dni_admin": self.dni_admin},
-            "maquina": {"codigo_hardware": codigo_hardware, "tipo_maquina": 1},
-            "heartbeat": {"intervalo_s": self.heartbeat_intervalo_s},
-        }
+        existing = self.config_repository.load()
+        base_config = dict(existing)
+        base_config.update(
+            {
+                "promociones": self.promociones,
+                "valor_ficha": self.valor_ficha,
+                "device_id": codigo_hardware,
+                "contadores": self.contadores,
+                "contadores_apertura": self.contadores_apertura,
+                "contadores_parciales": self.contadores_parciales,
+                "api": self.api_config,
+                "admin": {"dni_admin": self.dni_admin},
+                "atajos": {"promociones": self._normalizar_atajos_promociones(self.atajos_promociones)},
+                "maquina": {
+                    "codigo_hardware": codigo_hardware,
+                    "tipo_maquina": 1,
+                    "hoppers": self.maquina_hoppers,
+                },
+                "heartbeat": {"intervalo_s": self.heartbeat_intervalo_s},
+                "operacion": self.operacion_config,
+                "network_manager": self.network_manager_cfg,
+            }
+        )
         self.config_repository.save(base_config)
+
+    def _build_backend_probe_url(self):
+        base_urls = self.api_config.get("base_urls", []) if isinstance(self.api_config, dict) else []
+        if not isinstance(base_urls, list) or not base_urls:
+            return "https://maquinasbonus.com/"
+        base = str(base_urls[0]).rstrip("/")
+        return f"{base}/"
+
+    def _on_network_status_changed(self, status):
+        if not isinstance(status, dict):
+            return
+        self._network_status_ui = status
+        try:
+            self.root.after(0, lambda: self.actualizar_estado_red_ui(status))
+        except Exception as exc:
+            print(f"[GUI] No se pudo actualizar estado de red: {exc}")
+
+    def actualizar_estado_red_ui(self, status=None):
+        if status is None:
+            status = self._network_status_ui if isinstance(self._network_status_ui, dict) else {}
+        level = str(status.get("level", "UNKNOWN")).upper()
+        message = str(status.get("message", "") or "").strip()
+        conn_name = str(status.get("active_connection", "") or "").strip()
+        signal = status.get("signal_percent")
+        signal_text = f" {int(signal)}%" if isinstance(signal, (int, float)) else ""
+        conn_text = f" {conn_name}" if conn_name else ""
+        label_text = f"Red: {level}{conn_text}{signal_text}"
+        if message and not conn_name:
+            label_text = f"Red: {level} ({message})"
+
+        if level == "ONLINE":
+            bg, fg = "#27AE60", "white"
+        elif level == "DEGRADED":
+            bg, fg = "#F39C12", "white"
+        elif level == "OFFLINE":
+            bg, fg = "#C0392B", "white"
+        elif level == "DISABLED":
+            bg, fg = "#7F8C8D", "white"
+        else:
+            bg, fg = "#D6EAF8", "#1B4F72"
+        self.status_network_lbl.config(text=label_text, bg=bg, fg=fg)
+
+    def asegurar_apertura_automatica_del_dia(self):
+        """
+        Ejecuta apertura automática una sola vez por día al primer login.
+        Evita depender de un botón manual y deja registro en backend.
+        """
+        hoy = datetime.now().strftime("%Y-%m-%d")
+        ultima_apertura = str(self.operacion_config.get("ultima_apertura_fecha", "") or "").strip()
+        if ultima_apertura == hoy:
+            return
+
+        print(f"[GUI] Primera sesión del día ({hoy}) -> apertura automática")
+        self.cierre_realizado = False
+
+        # Nuevo ciclo diario
+        self.contadores_apertura = self.counter_service.default_counters()
+        self.contadores_parciales = self.counter_service.default_counters()
+
+        # Ajustar bases para mantener consistencia con contador hardware acumulado
+        hw_actual = shared_buffer.get_fichas_expendidas()
+        self.inicio_apertura_fichas = -hw_actual
+        self.inicio_parcial_fichas = -hw_actual
+
+        apertura_info = self.session_service.build_daily_close(
+            self.device_id,
+            self.contadores_apertura,
+            event_type="apertura",
+        )
+        _post_en_hilo(DNS + urlCierres, apertura_info, "Apertura automática remota")
+        _post_en_hilo(DNSLocal + urlCierres, apertura_info, "Apertura automática local")
+
+        self.operacion_config["ultima_apertura_fecha"] = hoy
+        self.actualizar_contadores_gui()
+        self.guardar_configuracion(inmediato=True)
+
+    def configurar_atajos_promociones(self):
+        config_window = tk.Toplevel(self.root)
+        config_window.title("Configurar atajos de promociones")
+        config_window.geometry("700x360")
+        config_window.configure(bg="#ffffff")
+        config_window.transient(self.root)
+        config_window.grab_set()
+
+        tk.Label(
+            config_window,
+            text="Modo juego: elegí promo y presioná una tecla para bindearla.",
+            bg="#ffffff",
+            fg="#7F8C8D",
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", padx=16, pady=(14, 10))
+        tk.Label(
+            config_window,
+            text="Tip: podés asignar varias teclas por promo. No se permiten conflictos.",
+            bg="#ffffff",
+            fg="#7F8C8D",
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=16, pady=(0, 8))
+
+        estado_captura = tk.Label(
+            config_window,
+            text="Esperando acción...",
+            bg="#ffffff",
+            fg="#34495E",
+            font=("Segoe UI", 10, "bold"),
+        )
+        estado_captura.pack(anchor="w", padx=16, pady=(0, 8))
+        ultima_tecla_lbl = tk.Label(
+            config_window,
+            text="Última tecla capturada: -",
+            bg="#EAF2F8",
+            fg="#1F618D",
+            font=("Segoe UI", 14, "bold"),
+            padx=12,
+            pady=8,
+            relief="solid",
+            bd=1,
+        )
+        ultima_tecla_lbl.pack(fill="x", padx=16, pady=(0, 10))
+
+        blocked_keys = {"<Left>", "<Right>", "<KP_Left>", "<KP_Right>", "<Up>", "<Down>", "<KP_Up>", "<KP_Down>"}
+        current_hotkeys = self._normalizar_atajos_promociones(self.atajos_promociones)
+        rows = {}
+        capturando_para = {"promo": None}
+
+        def refresh_row(promo):
+            keys = current_hotkeys.get(promo, [])
+            listbox = rows[promo]["listbox"]
+            listbox.delete(0, tk.END)
+            if not keys:
+                listbox.insert(tk.END, "(sin atajos)")
+            else:
+                for key in keys:
+                    listbox.insert(tk.END, key)
+
+        def iniciar_captura(promo):
+            capturando_para["promo"] = promo
+            estado_captura.config(text=f"Presioná una tecla para {promo}...", fg="#1F618D")
+
+        def limpiar_promo(promo):
+            current_hotkeys[promo] = []
+            refresh_row(promo)
+            estado_captura.config(text=f"Atajos de {promo} limpiados.", fg="#7F8C8D")
+
+        def agregar_default(promo):
+            current_hotkeys[promo] = list(DEFAULT_PROMO_HOTKEYS[promo])
+            refresh_row(promo)
+            estado_captura.config(text=f"Atajos por defecto cargados en {promo}.", fg="#7F8C8D")
+
+        def quitar_tecla_seleccionada(promo):
+            listbox = rows[promo]["listbox"]
+            selection = listbox.curselection()
+            if not selection:
+                estado_captura.config(text=f"Seleccioná una tecla de {promo} para quitar.", fg="#7F8C8D")
+                return
+            key_value = listbox.get(selection[0])
+            if key_value == "(sin atajos)":
+                return
+            current_hotkeys[promo] = [key for key in current_hotkeys.get(promo, []) if key != key_value]
+            refresh_row(promo)
+            estado_captura.config(text=f"Tecla {key_value} quitada de {promo}.", fg="#7F8C8D")
+
+        def on_keypress_capture(event):
+            promo = capturando_para.get("promo")
+            if not promo:
+                return
+            key_token = self._evento_a_tecla_bind(event)
+            if not key_token:
+                return "break"
+            if key_token in blocked_keys:
+                estado_captura.config(text=f"La tecla {key_token} está reservada para navegación.", fg="#C0392B")
+                capturando_para["promo"] = None
+                return "break"
+
+            for other_promo, keys in current_hotkeys.items():
+                if other_promo != promo and key_token in keys:
+                    estado_captura.config(
+                        text=f"Conflicto: {key_token} ya está en {other_promo}.",
+                        fg="#C0392B",
+                    )
+                    capturando_para["promo"] = None
+                    return "break"
+
+            if key_token not in current_hotkeys[promo]:
+                current_hotkeys[promo].append(key_token)
+            refresh_row(promo)
+            estado_captura.config(text=f"{key_token} agregado a {promo}.", fg="#1E8449")
+            ultima_tecla_lbl.config(text=f"Última tecla capturada: {key_token}")
+            capturando_para["promo"] = None
+            return "break"
+
+        config_window.bind("<KeyPress>", on_keypress_capture)
+        config_window.focus_force()
+
+        for promo in ["Promo 1", "Promo 2", "Promo 3"]:
+            row = tk.Frame(config_window, bg="#ffffff")
+            row.pack(fill="x", padx=16, pady=7)
+            tk.Label(row, text=f"{promo}", width=10, anchor="w", bg="#ffffff", font=("Segoe UI", 10, "bold")).pack(side="left")
+
+            listbox = tk.Listbox(row, height=3, font=("Segoe UI", 9), exportselection=False)
+            listbox.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+            tk.Button(
+                row,
+                text="Capturar tecla",
+                command=lambda p=promo: iniciar_captura(p),
+                bg="#3498DB",
+                fg="white",
+                font=("Segoe UI", 9, "bold"),
+                bd=0,
+                padx=8,
+                pady=4,
+                cursor="hand2",
+            ).pack(side="left", padx=(0, 6))
+            tk.Button(
+                row,
+                text="Quitar seleccionada",
+                command=lambda p=promo: quitar_tecla_seleccionada(p),
+                bg="#E67E22",
+                fg="white",
+                font=("Segoe UI", 9, "bold"),
+                bd=0,
+                padx=8,
+                pady=4,
+                cursor="hand2",
+            ).pack(side="left", padx=(0, 6))
+            tk.Button(
+                row,
+                text="Limpiar todo",
+                command=lambda p=promo: limpiar_promo(p),
+                bg="#AF601A",
+                fg="white",
+                font=("Segoe UI", 9, "bold"),
+                bd=0,
+                padx=8,
+                pady=4,
+                cursor="hand2",
+            ).pack(side="left", padx=(0, 6))
+            tk.Button(
+                row,
+                text="Default",
+                command=lambda p=promo: agregar_default(p),
+                bg="#7F8C8D",
+                fg="white",
+                font=("Segoe UI", 9, "bold"),
+                bd=0,
+                padx=8,
+                pady=4,
+                cursor="hand2",
+            ).pack(side="left")
+            rows[promo] = {"listbox": listbox}
+            refresh_row(promo)
+
+        def guardar_atajos():
+            seen = {}
+            normalized = self._normalizar_atajos_promociones(current_hotkeys)
+            for promo, keys in normalized.items():
+                for key in keys:
+                    owner = seen.get(key)
+                    if owner and owner != promo:
+                        messagebox.showerror(
+                            "Conflicto de atajos",
+                            f"La tecla '{key}' está asignada a {owner} y {promo}.",
+                        )
+                        return
+                    seen[key] = promo
+
+            self.atajos_promociones = normalized
+            self.aplicar_atajos_promos_root()
+            for entry in self._entries_operativos:
+                self.aplicar_atajos_promos_entry(entry)
+            self.guardar_configuracion(inmediato=True)
+            config_window.destroy()
+            messagebox.showinfo("Atajos", "Atajos de promociones guardados correctamente.")
+
+        botones = tk.Frame(config_window, bg="#ffffff")
+        botones.pack(fill="x", padx=16, pady=14)
+        tk.Button(botones, text="Guardar", command=guardar_atajos, bg="#4CAF50", fg="white", font=("Arial", 11), bd=0).pack(side="left", padx=(0, 8))
+        tk.Button(botones, text="Cancelar", command=config_window.destroy, bg="#D32F2F", fg="white", font=("Arial", 11), bd=0).pack(side="left")
+
+    def configurar_calibracion_tolvas(self):
+        config_window = tk.Toplevel(self.root)
+        config_window.title("Calibrar sensores de tolvas")
+        config_window.geometry("760x460")
+        config_window.configure(bg="#ffffff")
+
+        tk.Label(
+            config_window,
+            text="Guía: 1) Seleccioná tolva  2) Simulá/pasá ficha  3) Ajustá umbrales  4) Guardá y probá",
+            bg="#ffffff",
+            fg="#7F8C8D",
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", padx=16, pady=(14, 10))
+
+        body = tk.Frame(config_window, bg="#ffffff")
+        body.pack(fill="both", expand=True, padx=16, pady=4)
+
+        entries = {}
+        hoppers = self.maquina_hoppers if isinstance(self.maquina_hoppers, list) else []
+        for idx, hopper in enumerate(hoppers[:3]):
+            card = tk.Frame(body, bg="#F8F9F9", bd=1, relief="solid")
+            card.pack(fill="x", pady=6)
+            tk.Label(
+                card,
+                text=f"{hopper.get('nombre', f'Tolva {idx+1}')} (sensor pin {hopper.get('sensor_pin', '-')})",
+                bg="#F8F9F9",
+                fg="#2C3E50",
+                font=("Segoe UI", 10, "bold"),
+            ).pack(anchor="w", padx=12, pady=(8, 6))
+
+            calib = hopper.get("calibracion", {}) if isinstance(hopper.get("calibracion", {}), dict) else {}
+            pulso_min_ms = float(calib.get("pulso_min_s", 0.05)) * 1000.0
+            pulso_max_ms = float(calib.get("pulso_max_s", 0.5)) * 1000.0
+            timeout_s = float(calib.get("timeout_motor_s", 2.0))
+
+            row = tk.Frame(card, bg="#F8F9F9")
+            row.pack(fill="x", padx=12, pady=(0, 10))
+
+            tk.Label(row, text="Pulso mínimo (ms)", bg="#F8F9F9", font=("Segoe UI", 9)).pack(side="left")
+            min_entry = tk.Entry(row, width=8, font=("Segoe UI", 9), justify="center")
+            min_entry.insert(0, f"{pulso_min_ms:.1f}")
+            min_entry.pack(side="left", padx=(6, 14))
+
+            tk.Label(row, text="Pulso máximo (ms)", bg="#F8F9F9", font=("Segoe UI", 9)).pack(side="left")
+            max_entry = tk.Entry(row, width=8, font=("Segoe UI", 9), justify="center")
+            max_entry.insert(0, f"{pulso_max_ms:.1f}")
+            max_entry.pack(side="left", padx=(6, 14))
+
+            tk.Label(row, text="Timeout motor (s)", bg="#F8F9F9", font=("Segoe UI", 9)).pack(side="left")
+            timeout_entry = tk.Entry(row, width=8, font=("Segoe UI", 9), justify="center")
+            timeout_entry.insert(0, f"{timeout_s:.2f}")
+            timeout_entry.pack(side="left", padx=(6, 14))
+
+            entries[idx] = (min_entry, max_entry, timeout_entry)
+
+        def guardar_calibracion():
+            try:
+                for idx, triplet in entries.items():
+                    min_entry, max_entry, timeout_entry = triplet
+                    pulso_min_ms = float(min_entry.get())
+                    pulso_max_ms = float(max_entry.get())
+                    timeout_motor_s = float(timeout_entry.get())
+
+                    if pulso_min_ms <= 0 or pulso_max_ms <= 0 or timeout_motor_s <= 0:
+                        raise ValueError("Los valores deben ser positivos.")
+                    if pulso_max_ms < pulso_min_ms:
+                        raise ValueError("Pulso máximo no puede ser menor a pulso mínimo.")
+
+                    hopper = self.maquina_hoppers[idx]
+                    calibracion = hopper.get("calibracion", {})
+                    if not isinstance(calibracion, dict):
+                        calibracion = {}
+                    calibracion["pulso_min_s"] = pulso_min_ms / 1000.0
+                    calibracion["pulso_max_s"] = pulso_max_ms / 1000.0
+                    calibracion["timeout_motor_s"] = timeout_motor_s
+                    hopper["calibracion"] = calibracion
+
+                self.guardar_configuracion(inmediato=True)
+                # Permite aplicar nueva calibración sin reiniciar la app.
+                try:
+                    self.core.recargar_tolvas_desde_config()
+                except Exception as exc:
+                    print(f"[GUI] No se pudo recargar calibración en caliente: {exc}")
+                config_window.destroy()
+                messagebox.showinfo("Calibración", "Calibración de tolvas guardada correctamente.")
+            except ValueError as exc:
+                messagebox.showerror("Error", str(exc))
+
+        botones = tk.Frame(config_window, bg="#ffffff")
+        botones.pack(fill="x", padx=16, pady=14)
+        tk.Button(botones, text="Guardar", command=guardar_calibracion, bg="#4CAF50", fg="white", font=("Arial", 11), bd=0).pack(side="left", padx=(0, 8))
+        tk.Button(botones, text="Cancelar", command=config_window.destroy, bg="#D32F2F", fg="white", font=("Arial", 11), bd=0).pack(side="left")
+
+    def configurar_gestor_red(self):
+        if self.username != "admin":
+            messagebox.showerror("Permiso denegado", "Solo administrador puede configurar el gestor de red.")
+            return
+
+        config_window = tk.Toplevel(self.root)
+        config_window.title("Configurar gestor de red")
+        config_window.geometry("520x330")
+        config_window.configure(bg="#ffffff")
+        config_window.transient(self.root)
+        config_window.grab_set()
+
+        cfg = dict(self.network_manager_cfg) if isinstance(self.network_manager_cfg, dict) else {}
+
+        enabled_var = tk.BooleanVar(value=bool(cfg.get("enabled", True)))
+        check_interval_var = tk.StringVar(value=str(cfg.get("check_interval_s", 8)))
+        retry_var = tk.StringVar(value=str(cfg.get("reconnect_after_failures", 3)))
+        timeout_var = tk.StringVar(value=str(cfg.get("backend_timeout_s", 3.0)))
+        internet_host_var = tk.StringVar(value=str(cfg.get("internet_host", "8.8.8.8")))
+        backend_url_var = tk.StringVar(value=str(cfg.get("backend_url", self._build_backend_probe_url())))
+        iface_var = tk.StringVar(value=str(cfg.get("preferred_interface", "")))
+
+        tk.Label(
+            config_window,
+            text="Monitor en tiempo real + reconexión automática con NetworkManager (nmcli).",
+            bg="#ffffff",
+            fg="#7F8C8D",
+            font=("Segoe UI", 10),
+            justify="left",
+        ).pack(anchor="w", padx=16, pady=(14, 10))
+        tk.Checkbutton(
+            config_window,
+            text="Habilitar gestor de red",
+            variable=enabled_var,
+            bg="#ffffff",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+
+        form = tk.Frame(config_window, bg="#ffffff")
+        form.pack(fill="x", padx=16, pady=(0, 8))
+
+        def add_row(label, variable):
+            row = tk.Frame(form, bg="#ffffff")
+            row.pack(fill="x", pady=5)
+            tk.Label(row, text=label, width=26, anchor="w", bg="#ffffff", font=("Segoe UI", 9)).pack(side="left")
+            tk.Entry(row, textvariable=variable, font=("Segoe UI", 9), justify="left").pack(side="left", fill="x", expand=True)
+
+        add_row("Intervalo de chequeo (s)", check_interval_var)
+        add_row("Fallas antes de reconectar", retry_var)
+        add_row("Timeout backend (s)", timeout_var)
+        add_row("Host de prueba internet", internet_host_var)
+        add_row("URL backend para healthcheck", backend_url_var)
+        add_row("Interfaz preferida (ej: wlan0)", iface_var)
+
+        tk.Label(
+            config_window,
+            text="Tip: en Raspberry Pi usar interfaz preferida 'wlan0' o 'eth0'.",
+            bg="#ffffff",
+            fg="#7F8C8D",
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=16, pady=(2, 8))
+
+        def guardar():
+            try:
+                new_cfg = {
+                    "enabled": bool(enabled_var.get()),
+                    "check_interval_s": max(2, int(float(check_interval_var.get()))),
+                    "reconnect_after_failures": max(1, int(float(retry_var.get()))),
+                    "backend_timeout_s": max(0.5, float(timeout_var.get())),
+                    "internet_host": internet_host_var.get().strip() or "8.8.8.8",
+                    "backend_url": backend_url_var.get().strip(),
+                    "preferred_interface": iface_var.get().strip(),
+                }
+            except ValueError:
+                messagebox.showerror("Error", "Revisá los valores numéricos del gestor de red.")
+                return
+
+            self.network_manager_cfg = new_cfg
+            self.guardar_configuracion(inmediato=True)
+            self.network_service.stop()
+            self.network_service.start(callback=self._on_network_status_changed)
+            config_window.destroy()
+            messagebox.showinfo("Gestor de red", "Configuración guardada y monitor reiniciado.")
+
+        btn_row = tk.Frame(config_window, bg="#ffffff")
+        btn_row.pack(fill="x", padx=16, pady=12)
+        tk.Button(btn_row, text="Guardar", command=guardar, bg="#4CAF50", fg="white", font=("Arial", 11), bd=0).pack(side="left", padx=(0, 8))
+        tk.Button(btn_row, text="Cancelar", command=config_window.destroy, bg="#D32F2F", fg="white", font=("Arial", 11), bd=0).pack(side="left")
+
+    def abrir_reportes_admin(self):
+        if self.username != "admin":
+            messagebox.showerror("Permiso denegado", "Solo administrador puede ver reportes de BD.")
+            return
+
+        panel = tk.Toplevel(self.root)
+        panel.title("Reportes y cierres (BD)")
+        panel.geometry("1180x640")
+        panel.configure(bg="#ffffff")
+        panel.transient(self.root)
+        panel.grab_set()
+
+        toolbar = tk.Frame(panel, bg="#ffffff")
+        toolbar.pack(fill="x", padx=12, pady=(10, 4))
+        tk.Label(toolbar, text="ID dispositivo", bg="#ffffff", font=("Segoe UI", 9)).pack(side="left")
+        device_var = tk.StringVar(value=self.device_id)
+        tk.Entry(toolbar, textvariable=device_var, width=20, font=("Segoe UI", 9)).pack(side="left", padx=(6, 12))
+        tk.Label(toolbar, text="Límite", bg="#ffffff", font=("Segoe UI", 9)).pack(side="left")
+        limit_var = tk.StringVar(value="80")
+        tk.Entry(toolbar, textvariable=limit_var, width=6, font=("Segoe UI", 9), justify="center").pack(side="left", padx=(6, 12))
+        status_lbl = tk.Label(toolbar, text="", bg="#ffffff", fg="#7F8C8D", font=("Segoe UI", 9, "bold"))
+        status_lbl.pack(side="left", padx=(8, 0))
+
+        notebook = ttk.Notebook(panel)
+        notebook.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+
+        daily_tab = tk.Frame(notebook, bg="#ffffff")
+        partial_tab = tk.Frame(notebook, bg="#ffffff")
+        notebook.add(daily_tab, text="Cierres diarios")
+        notebook.add(partial_tab, text="Cierres parciales")
+
+        daily_cols = ("id_cierre", "id_dispositivo", "fichas_totales", "dinero", "p1", "p2", "p3", "fichas_promo", "fecha_apertura", "tipo_evento")
+        partial_cols = (
+            "id_cierre_parcial",
+            "id_dispositivo",
+            "id_cajero",
+            "fichas_totales",
+            "dinero",
+            "p1",
+            "p2",
+            "p3",
+            "fichas_promo",
+            "fichas_devolucion",
+            "fichas_cambio",
+            "fecha_apertura_turno",
+        )
+        daily_tree = ttk.Treeview(daily_tab, columns=daily_cols, show="headings")
+        partial_tree = ttk.Treeview(partial_tab, columns=partial_cols, show="headings")
+
+        for tree, columns in ((daily_tree, daily_cols), (partial_tree, partial_cols)):
+            for col in columns:
+                tree.heading(col, text=col)
+                width = 120
+                if "fecha" in col:
+                    width = 170
+                elif col in ("id_dispositivo", "tipo_evento"):
+                    width = 150
+                tree.column(col, width=width, anchor="center")
+            vsb = ttk.Scrollbar(tree.master, orient="vertical", command=tree.yview)
+            hsb = ttk.Scrollbar(tree.master, orient="horizontal", command=tree.xview)
+            tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+            tree.pack(fill="both", expand=True, side="top")
+            vsb.pack(side="right", fill="y")
+            hsb.pack(side="bottom", fill="x")
+
+        def fill_tree(tree, rows, columns):
+            tree.delete(*tree.get_children())
+            for row in rows:
+                values = [row.get(col, "") for col in columns]
+                tree.insert("", "end", values=values)
+
+        def cargar():
+            status_lbl.config(text="Consultando BD...", fg="#1F618D")
+            try:
+                limit = int(float(limit_var.get()))
+            except ValueError:
+                messagebox.showerror("Filtro inválido", "El límite debe ser numérico.")
+                return
+            device = device_var.get().strip()
+
+            def worker():
+                try:
+                    daily_rows = self.report_repository.fetch_daily_closures(limit=limit, device_id=device)
+                    partial_rows = self.report_repository.fetch_partial_closures(limit=limit, device_id=device)
+                    self.root.after(
+                        0,
+                        lambda: (
+                            fill_tree(daily_tree, daily_rows, daily_cols),
+                            fill_tree(partial_tree, partial_rows, partial_cols),
+                            status_lbl.config(
+                                text=f"{len(daily_rows)} diarios | {len(partial_rows)} parciales",
+                                fg="#1E8449",
+                            ),
+                        ),
+                    )
+                except Exception as exc:
+                    self.root.after(0, lambda: status_lbl.config(text=f"Error: {exc}", fg="#C0392B"))
+
+            _threading.Thread(target=worker, daemon=True).start()
+
+        tk.Button(toolbar, text="Refrescar", command=cargar, bg="#3498DB", fg="white", font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=4).pack(side="right")
+        cargar()
 
     def configurar_promo(self, promo):
         config_window = tk.Toplevel(self.root)
@@ -860,11 +1890,17 @@ class ExpendedoraGUI:
         self.contadores_apertura["device_id"] = self.device_id
         
         # Insertar cierre inicial con todo en 0 para registrar el día
-        cierre_inicial = self.session_service.build_daily_close(self.device_id, self.contadores_apertura)
+        cierre_inicial = self.session_service.build_daily_close(
+            self.device_id,
+            self.contadores_apertura,
+            event_type="apertura",
+        )
         
         # Enviar cierre inicial al servidor remoto y local (no bloquea la GUI)
         _post_en_hilo(DNS + urlCierres, cierre_inicial, "Apertura remota")
         _post_en_hilo(DNSLocal + urlCierres, cierre_inicial, "Apertura local")
+
+        self.operacion_config["ultima_apertura_fecha"] = datetime.now().strftime("%Y-%m-%d")
         
         self.actualizar_contadores_gui()
         self.guardar_configuracion(inmediato=True)
@@ -938,6 +1974,7 @@ class ExpendedoraGUI:
         self.guardar_configuracion(inmediato=True)
 
     def cerrar_sesion(self):
+        self.network_service.stop()
         # Determinar qué contadores usar para el subcierre
         # Si se hizo un cierre del día, usar los contadores guardados antes del cierre
         # Si NO se hizo cierre, usar los contadores parciales actuales
@@ -1024,9 +2061,9 @@ class ExpendedoraGUI:
         self.simular_salida_fichas()
         
     def simular_salida_fichas(self):
-        """Simula el sensor del hopper detectando una ficha (para pruebas)."""
+        """Simula el sensor de la tolva seleccionada (para pruebas)."""
         from gpio_sim import GPIO
-        # Simular flanco descendente en el sensor ENTHOPER
+        # Simular flanco descendente sobre el sensor actualmente activo
         GPIO.simulate_sensor_pulse(self.core.sensor_pin)
             
     def simular_promo(self, promo):
@@ -1075,6 +2112,7 @@ class ExpendedoraGUI:
         now = datetime.now()
         current_time = now.strftime("%Y-%m-%d %H:%M:%S")
         self.footer_label.config(text=current_time)  # Actualizar el label del footer
+        self.actualizar_estado_operacion_ui()
         self._after_id = self.root.after(1000, self.actualizar_fecha_hora)  # Llamar a esta función cada segundo
 
 if __name__ == "__main__":

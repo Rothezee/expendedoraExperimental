@@ -7,16 +7,68 @@ class AuthRepositoryMySQL:
     def __init__(self, config_repository: ConfigRepository):
         self.config_repository = config_repository
 
-    def _connect(self):
+    def _get_mysql_targets(self):
         config = self.config_repository.load()
         mysql_cfg = config.get("mysql", {})
-        return mysql.connector.connect(
-            host=mysql_cfg.get("host", "localhost"),
-            port=mysql_cfg.get("port", 3306),
-            user=mysql_cfg.get("user", "root"),
-            password=mysql_cfg.get("password", ""),
-            database=mysql_cfg.get("database", "sistemadeadministracion"),
-        )
+        if not isinstance(mysql_cfg, dict):
+            mysql_cfg = {}
+
+        active = str(mysql_cfg.get("active", "local")).lower()
+        fallback = bool(mysql_cfg.get("fallback_to_secondary", True))
+        local_cfg = mysql_cfg.get("local", {})
+        prod_cfg = mysql_cfg.get("production", {})
+        if not isinstance(local_cfg, dict):
+            local_cfg = {}
+        if not isinstance(prod_cfg, dict):
+            prod_cfg = {}
+
+        # Compatibilidad con formato viejo plano
+        if any(key in mysql_cfg for key in ("host", "port", "user", "password", "database")):
+            legacy = {
+                "host": mysql_cfg.get("host", "localhost"),
+                "port": mysql_cfg.get("port", 3306),
+                "user": mysql_cfg.get("user", "root"),
+                "password": mysql_cfg.get("password", ""),
+                "database": mysql_cfg.get("database", "sistemadeadministracion"),
+            }
+            return [legacy]
+
+        local_target = {
+            "host": local_cfg.get("host", "localhost"),
+            "port": local_cfg.get("port", 3306),
+            "user": local_cfg.get("user", "root"),
+            "password": local_cfg.get("password", ""),
+            "database": local_cfg.get("database", "sistemadeadministracion"),
+        }
+        prod_target = {
+            "host": prod_cfg.get("host", "localhost"),
+            "port": prod_cfg.get("port", 3306),
+            "user": prod_cfg.get("user", "root"),
+            "password": prod_cfg.get("password", ""),
+            "database": prod_cfg.get("database", "sistemadeadministracion"),
+        }
+
+        if active == "production":
+            return [prod_target, local_target] if fallback else [prod_target]
+        return [local_target, prod_target] if fallback else [local_target]
+
+    def _connect(self):
+        last_exc = None
+        for target in self._get_mysql_targets():
+            try:
+                return mysql.connector.connect(
+                    host=target.get("host", "localhost"),
+                    port=target.get("port", 3306),
+                    user=target.get("user", "root"),
+                    password=target.get("password", ""),
+                    database=target.get("database", "sistemadeadministracion"),
+                )
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("No MySQL targets configured")
 
     def _get_dni_admin(self) -> str | None:
         config = self.config_repository.load()

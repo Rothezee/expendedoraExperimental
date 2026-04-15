@@ -15,6 +15,27 @@ DEFAULT_MYSQL_CONFIG = {
     "password": "",
     "database": "sistemadeadministracion",
 }
+DEFAULT_HOPPERS = [
+    {"id": 1, "nombre": "Tolva 1", "motor_pin": 24, "sensor_pin": 16},
+    {"id": 2, "nombre": "Tolva 2", "motor_pin": 25, "sensor_pin": 17},
+    {"id": 3, "nombre": "Tolva 3", "motor_pin": 23, "sensor_pin": 27},
+]
+DEFAULT_HOPPER_CALIBRATION = {
+    "pulso_min_s": 0.05,
+    "pulso_max_s": 0.5,
+    "timeout_motor_s": 2.0,
+}
+DEFAULT_PROMO_HOTKEYS = {
+    "Promo 1": ["<slash>", "<KP_Divide>"],
+    "Promo 2": ["<asterisk>", "<KP_Multiply>", "x", "X"],
+    "Promo 3": ["<minus>", "<KP_Subtract>"],
+}
+DEFAULT_MYSQL_MULTI_CONFIG = {
+    "active": "local",
+    "fallback_to_secondary": True,
+    "local": dict(DEFAULT_MYSQL_CONFIG),
+    "production": dict(DEFAULT_MYSQL_CONFIG),
+}
 DEFAULT_UPDATER_CONFIG = {
     "enabled": False,
     "remote": "origin",
@@ -25,6 +46,15 @@ DEFAULT_UPDATER_CONFIG = {
     "restart_command_linux": "",
     "restart_command_windows": "",
     "preserve_files": ["config.json", "registro.json", "buffer_state.json"],
+}
+DEFAULT_NETWORK_MANAGER_CONFIG = {
+    "enabled": True,
+    "check_interval_s": 8,
+    "reconnect_after_failures": 3,
+    "backend_timeout_s": 3.0,
+    "internet_host": "8.8.8.8",
+    "backend_url": "https://maquinasbonus.com/",
+    "preferred_interface": "",
 }
 
 
@@ -42,6 +72,16 @@ class ConfigRepository:
             return minimum
         return parsed
 
+    @staticmethod
+    def _safe_float(value: Any, default: float, minimum: float | None = None) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = default
+        if minimum is not None and parsed < minimum:
+            return minimum
+        return parsed
+
     def normalize(self, config: Dict[str, Any] | None) -> Dict[str, Any]:
         if not isinstance(config, dict):
             config = {}
@@ -52,11 +92,23 @@ class ConfigRepository:
         if not isinstance(api, dict):
             api = {}
         base_urls = api.get("base_urls", DEFAULT_API_BASE_URLS)
+        local_base = str(api.get("local_base_url", "") or "").strip()
+        prod_base = str(api.get("production_base_url", "") or "").strip()
         if isinstance(base_urls, str):
             base_urls = [base_urls]
         if not isinstance(base_urls, list) or not base_urls:
             base_urls = list(DEFAULT_API_BASE_URLS)
         base_urls = [str(url).strip() for url in base_urls if str(url).strip()]
+        if local_base:
+            base_urls.insert(0, local_base)
+        if prod_base:
+            base_urls.append(prod_base)
+        # Deduplicar preservando orden
+        dedup_base_urls: list[str] = []
+        for url in base_urls:
+            if url not in dedup_base_urls:
+                dedup_base_urls.append(url)
+        base_urls = dedup_base_urls
         if not base_urls:
             base_urls = list(DEFAULT_API_BASE_URLS)
         endpoint = str(api.get("endpoint_receptor", DEFAULT_API_ENDPOINT) or "").strip().lstrip("/")
@@ -71,6 +123,79 @@ class ConfigRepository:
         if not isinstance(maquina, dict):
             maquina = {}
         codigo_hardware = str(maquina.get("codigo_hardware", config.get("codigo_hardware", legacy_device_id)) or "").strip()
+        hoppers = maquina.get("hoppers", DEFAULT_HOPPERS)
+        if not isinstance(hoppers, list) or not hoppers:
+            hoppers = list(DEFAULT_HOPPERS)
+        normalized_hoppers = []
+        for idx, hopper in enumerate(hoppers[:3], start=1):
+            if not isinstance(hopper, dict):
+                hopper = {}
+            fallback = DEFAULT_HOPPERS[idx - 1] if idx - 1 < len(DEFAULT_HOPPERS) else DEFAULT_HOPPERS[0]
+            raw_calib = hopper.get("calibracion", {})
+            if not isinstance(raw_calib, dict):
+                raw_calib = {}
+            normalized_hoppers.append(
+                {
+                    "id": self._safe_int(hopper.get("id", idx), idx, minimum=1),
+                    "nombre": str(hopper.get("nombre", fallback["nombre"])),
+                    "motor_pin": self._safe_int(hopper.get("motor_pin", fallback["motor_pin"]), fallback["motor_pin"], minimum=1),
+                    "sensor_pin": self._safe_int(hopper.get("sensor_pin", fallback["sensor_pin"]), fallback["sensor_pin"], minimum=1),
+                    "calibracion": {
+                        "pulso_min_s": self._safe_float(
+                            raw_calib.get("pulso_min_s", DEFAULT_HOPPER_CALIBRATION["pulso_min_s"]),
+                            DEFAULT_HOPPER_CALIBRATION["pulso_min_s"],
+                            minimum=0.001,
+                        ),
+                        "pulso_max_s": self._safe_float(
+                            raw_calib.get("pulso_max_s", DEFAULT_HOPPER_CALIBRATION["pulso_max_s"]),
+                            DEFAULT_HOPPER_CALIBRATION["pulso_max_s"],
+                            minimum=0.001,
+                        ),
+                        "timeout_motor_s": self._safe_float(
+                            raw_calib.get("timeout_motor_s", DEFAULT_HOPPER_CALIBRATION["timeout_motor_s"]),
+                            DEFAULT_HOPPER_CALIBRATION["timeout_motor_s"],
+                            minimum=0.1,
+                        ),
+                    },
+                }
+            )
+            # Si quedaron invertidos por carga manual, los corregimos.
+            calib = normalized_hoppers[-1]["calibracion"]
+            if calib["pulso_max_s"] < calib["pulso_min_s"]:
+                calib["pulso_max_s"] = calib["pulso_min_s"]
+        while len(normalized_hoppers) < 3:
+            fallback = DEFAULT_HOPPERS[len(normalized_hoppers)]
+            normalized_hoppers.append(
+                {
+                    "id": fallback["id"],
+                    "nombre": fallback["nombre"],
+                    "motor_pin": fallback["motor_pin"],
+                    "sensor_pin": fallback["sensor_pin"],
+                    "calibracion": dict(DEFAULT_HOPPER_CALIBRATION),
+                }
+            )
+
+        atajos = config.get("atajos", {})
+        if not isinstance(atajos, dict):
+            atajos = {}
+        promo_hotkeys = atajos.get("promociones", {})
+        if not isinstance(promo_hotkeys, dict):
+            promo_hotkeys = {}
+        normalized_hotkeys = {}
+        for promo_name, default_keys in DEFAULT_PROMO_HOTKEYS.items():
+            keys = promo_hotkeys.get(promo_name, default_keys)
+            if isinstance(keys, str):
+                keys = [keys]
+            if not isinstance(keys, list):
+                keys = list(default_keys)
+            clean_keys = []
+            for key in keys:
+                key_str = str(key).strip()
+                if key_str and key_str not in clean_keys:
+                    clean_keys.append(key_str)
+            if not clean_keys:
+                clean_keys = list(default_keys)
+            normalized_hotkeys[promo_name] = clean_keys
 
         heartbeat = config.get("heartbeat", {})
         if not isinstance(heartbeat, dict):
@@ -84,13 +209,50 @@ class ConfigRepository:
         mysql = config.get("mysql", {})
         if not isinstance(mysql, dict):
             mysql = {}
-        mysql_cfg = {
-            "host": str(mysql.get("host", DEFAULT_MYSQL_CONFIG["host"])),
-            "port": self._safe_int(mysql.get("port", DEFAULT_MYSQL_CONFIG["port"]), DEFAULT_MYSQL_CONFIG["port"], minimum=1),
-            "user": str(mysql.get("user", DEFAULT_MYSQL_CONFIG["user"])),
-            "password": str(mysql.get("password", DEFAULT_MYSQL_CONFIG["password"])),
-            "database": str(mysql.get("database", DEFAULT_MYSQL_CONFIG["database"])),
-        }
+
+        # Compatibilidad: formato viejo plano mysql.host/mysql.user/...
+        if any(key in mysql for key in ("host", "port", "user", "password", "database")):
+            legacy_conn = {
+                "host": str(mysql.get("host", DEFAULT_MYSQL_CONFIG["host"])),
+                "port": self._safe_int(mysql.get("port", DEFAULT_MYSQL_CONFIG["port"]), DEFAULT_MYSQL_CONFIG["port"], minimum=1),
+                "user": str(mysql.get("user", DEFAULT_MYSQL_CONFIG["user"])),
+                "password": str(mysql.get("password", DEFAULT_MYSQL_CONFIG["password"])),
+                "database": str(mysql.get("database", DEFAULT_MYSQL_CONFIG["database"])),
+            }
+            mysql_cfg = {
+                "active": str(mysql.get("active", DEFAULT_MYSQL_MULTI_CONFIG["active"])),
+                "fallback_to_secondary": bool(mysql.get("fallback_to_secondary", DEFAULT_MYSQL_MULTI_CONFIG["fallback_to_secondary"])),
+                "local": dict(legacy_conn),
+                "production": dict(legacy_conn),
+            }
+        else:
+            local_cfg_raw = mysql.get("local", {})
+            if not isinstance(local_cfg_raw, dict):
+                local_cfg_raw = {}
+            prod_cfg_raw = mysql.get("production", {})
+            if not isinstance(prod_cfg_raw, dict):
+                prod_cfg_raw = {}
+            mysql_cfg = {
+                "active": str(mysql.get("active", DEFAULT_MYSQL_MULTI_CONFIG["active"])).lower(),
+                "fallback_to_secondary": bool(mysql.get("fallback_to_secondary", DEFAULT_MYSQL_MULTI_CONFIG["fallback_to_secondary"])),
+                "local": {
+                    "host": str(local_cfg_raw.get("host", DEFAULT_MYSQL_MULTI_CONFIG["local"]["host"])),
+                    "port": self._safe_int(local_cfg_raw.get("port", DEFAULT_MYSQL_MULTI_CONFIG["local"]["port"]), DEFAULT_MYSQL_MULTI_CONFIG["local"]["port"], minimum=1),
+                    "user": str(local_cfg_raw.get("user", DEFAULT_MYSQL_MULTI_CONFIG["local"]["user"])),
+                    "password": str(local_cfg_raw.get("password", DEFAULT_MYSQL_MULTI_CONFIG["local"]["password"])),
+                    "database": str(local_cfg_raw.get("database", DEFAULT_MYSQL_MULTI_CONFIG["local"]["database"])),
+                },
+                "production": {
+                    "host": str(prod_cfg_raw.get("host", DEFAULT_MYSQL_MULTI_CONFIG["production"]["host"])),
+                    "port": self._safe_int(prod_cfg_raw.get("port", DEFAULT_MYSQL_MULTI_CONFIG["production"]["port"]), DEFAULT_MYSQL_MULTI_CONFIG["production"]["port"], minimum=1),
+                    "user": str(prod_cfg_raw.get("user", DEFAULT_MYSQL_MULTI_CONFIG["production"]["user"])),
+                    "password": str(prod_cfg_raw.get("password", DEFAULT_MYSQL_MULTI_CONFIG["production"]["password"])),
+                    "database": str(prod_cfg_raw.get("database", DEFAULT_MYSQL_MULTI_CONFIG["production"]["database"])),
+                },
+            }
+
+        if mysql_cfg["active"] not in ("local", "production"):
+            mysql_cfg["active"] = DEFAULT_MYSQL_MULTI_CONFIG["active"]
 
         updater = config.get("updater", {})
         if not isinstance(updater, dict):
@@ -116,6 +278,30 @@ class ConfigRepository:
             "restart_command_windows": str(updater.get("restart_command_windows", DEFAULT_UPDATER_CONFIG["restart_command_windows"])),
             "preserve_files": preserve_files,
         }
+        network_manager = config.get("network_manager", {})
+        if not isinstance(network_manager, dict):
+            network_manager = {}
+        network_manager_cfg = {
+            "enabled": bool(network_manager.get("enabled", DEFAULT_NETWORK_MANAGER_CONFIG["enabled"])),
+            "check_interval_s": self._safe_int(
+                network_manager.get("check_interval_s", DEFAULT_NETWORK_MANAGER_CONFIG["check_interval_s"]),
+                DEFAULT_NETWORK_MANAGER_CONFIG["check_interval_s"],
+                minimum=2,
+            ),
+            "reconnect_after_failures": self._safe_int(
+                network_manager.get("reconnect_after_failures", DEFAULT_NETWORK_MANAGER_CONFIG["reconnect_after_failures"]),
+                DEFAULT_NETWORK_MANAGER_CONFIG["reconnect_after_failures"],
+                minimum=1,
+            ),
+            "backend_timeout_s": self._safe_float(
+                network_manager.get("backend_timeout_s", DEFAULT_NETWORK_MANAGER_CONFIG["backend_timeout_s"]),
+                DEFAULT_NETWORK_MANAGER_CONFIG["backend_timeout_s"],
+                minimum=0.5,
+            ),
+            "internet_host": str(network_manager.get("internet_host", DEFAULT_NETWORK_MANAGER_CONFIG["internet_host"])),
+            "backend_url": str(network_manager.get("backend_url", DEFAULT_NETWORK_MANAGER_CONFIG["backend_url"])),
+            "preferred_interface": str(network_manager.get("preferred_interface", DEFAULT_NETWORK_MANAGER_CONFIG["preferred_interface"])),
+        }
 
         merged = dict(config)
         merged["api"] = {
@@ -124,10 +310,16 @@ class ConfigRepository:
             "timeout_s": timeout_s,
         }
         merged["admin"] = {"dni_admin": dni_admin}
-        merged["maquina"] = {"codigo_hardware": codigo_hardware, "tipo_maquina": 1}
+        merged["atajos"] = {"promociones": normalized_hotkeys}
+        merged["maquina"] = {
+            "codigo_hardware": codigo_hardware,
+            "tipo_maquina": 1,
+            "hoppers": normalized_hoppers,
+        }
         merged["heartbeat"] = {"intervalo_s": intervalo_s}
         merged["mysql"] = mysql_cfg
         merged["updater"] = updater_cfg
+        merged["network_manager"] = network_manager_cfg
         merged["device_id"] = codigo_hardware
         return merged
 

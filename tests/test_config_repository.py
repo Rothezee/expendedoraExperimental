@@ -15,8 +15,19 @@ class ConfigRepositoryTest(unittest.TestCase):
         self.assertEqual(normalized["heartbeat"]["intervalo_s"], 600)
         self.assertIn("mysql", normalized)
         self.assertIn("updater", normalized)
+        self.assertIn("network_manager", normalized)
         self.assertEqual(normalized["updater"]["branch"], "main")
         self.assertEqual(normalized["updater"]["remote"], "origin")
+        self.assertTrue(normalized["network_manager"]["enabled"])
+        self.assertIn("local", normalized["mysql"])
+        self.assertIn("production", normalized["mysql"])
+        self.assertEqual(normalized["mysql"]["active"], "local")
+        self.assertIn("hoppers", normalized["maquina"])
+        self.assertEqual(len(normalized["maquina"]["hoppers"]), 3)
+        self.assertIn("atajos", normalized)
+        self.assertIn("promociones", normalized["atajos"])
+        self.assertIn("Promo 1", normalized["atajos"]["promociones"])
+        self.assertIn("calibracion", normalized["maquina"]["hoppers"][0])
 
     def test_save_and_load_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -27,6 +38,14 @@ class ConfigRepositoryTest(unittest.TestCase):
             self.assertEqual(loaded["device_id"], "EXP_TEST")
             self.assertEqual(loaded["maquina"]["codigo_hardware"], "EXP_TEST")
             self.assertIn("preserve_files", loaded["updater"])
+            self.assertIn("network_manager", loaded)
+            self.assertIn("check_interval_s", loaded["network_manager"])
+            self.assertIn("local", loaded["mysql"])
+            self.assertEqual(len(loaded["maquina"]["hoppers"]), 3)
+            self.assertIn("atajos", loaded)
+            self.assertIn("promociones", loaded["atajos"])
+            self.assertIn("Promo 2", loaded["atajos"]["promociones"])
+            self.assertIn("calibracion", loaded["maquina"]["hoppers"][1])
 
 
 if __name__ == "__main__":
