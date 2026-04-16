@@ -36,8 +36,9 @@ class TelemetryClientTest(unittest.TestCase):
         cfg = _FakeConfigRepo().load()
         body = self.client.build_telemetry_body(cfg, fichas=5, dinero=1200.5)
         self.assertEqual(body["action"], 2)
-        self.assertEqual(body["payload"]["fichas"], 5)
-        self.assertEqual(body["payload"]["dinero"], 1200.5)
+        self.assertEqual(body["fichas"], 5)
+        self.assertEqual(body["dinero"], 1200.5)
+        self.assertNotIn("payload", body)
 
     @patch("infra.telemetry_client.requests.post")
     def test_post_body_sends_to_all_urls(self, post_mock):
