@@ -7,7 +7,9 @@ DEFAULT_API_BASE_URLS = ["http://127.0.0.1", "https://app.maquinasbonus.com"]
 DEFAULT_API_ENDPOINT = "AdministrationPanel/src/devices/api_receptor.php"
 DEFAULT_API_ENDPOINT_LOCAL = "AdministrationPanel/src/devices/api_receptor.php"
 DEFAULT_API_ENDPOINT_CLOUD = "src/devices/api_receptor.php"
+DEFAULT_API_ENDPOINT_CLOUD_FALLBACK = "AdministrationPanel/src/devices/api_receptor.php"
 DEFAULT_API_TIMEOUT_S = 5
+DEFAULT_API_HEADERS: Dict[str, str] = {}
 DEFAULT_DNI_ADMIN = "00000000"
 DEFAULT_HEARTBEAT_INTERVAL_S = 600
 DEFAULT_MYSQL_CONFIG = {
@@ -123,7 +125,21 @@ class ConfigRepository:
                 endpoint_cloud = endpoint.replace("AdministrationPanel/", "", 1)
             else:
                 endpoint_cloud = endpoint or DEFAULT_API_ENDPOINT_CLOUD
+        endpoint_cloud_fallback = str(
+            api.get("endpoint_receptor_cloud_fallback", endpoint or DEFAULT_API_ENDPOINT_CLOUD_FALLBACK) or ""
+        ).strip().lstrip("/")
+        if not endpoint_cloud_fallback:
+            endpoint_cloud_fallback = DEFAULT_API_ENDPOINT_CLOUD_FALLBACK
         timeout_s = self._safe_int(api.get("timeout_s", DEFAULT_API_TIMEOUT_S), DEFAULT_API_TIMEOUT_S, minimum=1)
+        headers_raw = api.get("headers", DEFAULT_API_HEADERS)
+        if not isinstance(headers_raw, dict):
+            headers_raw = {}
+        headers = {}
+        for key, value in headers_raw.items():
+            key_str = str(key).strip()
+            value_str = str(value).strip()
+            if key_str and value_str:
+                headers[key_str] = value_str
 
         admin = config.get("admin", {})
         if not isinstance(admin, dict):
@@ -320,7 +336,9 @@ class ConfigRepository:
             "endpoint_receptor": endpoint,
             "endpoint_receptor_local": endpoint_local or DEFAULT_API_ENDPOINT_LOCAL,
             "endpoint_receptor_cloud": endpoint_cloud or DEFAULT_API_ENDPOINT_CLOUD,
+            "endpoint_receptor_cloud_fallback": endpoint_cloud_fallback,
             "timeout_s": timeout_s,
+            "headers": headers,
         }
         merged["admin"] = {"dni_admin": dni_admin}
         merged["atajos"] = {"promociones": normalized_hotkeys}

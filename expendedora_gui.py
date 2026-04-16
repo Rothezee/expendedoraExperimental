@@ -242,7 +242,17 @@ class ExpendedoraGUI:
 
         self.contadores_labels = {}
         
-        def crear_card_contador(parent, key, titulo, color_borde, side="left", pady=0, fixed_height=140, expand=True):
+        def crear_card_contador(
+            parent,
+            key,
+            titulo,
+            color_borde,
+            side="left",
+            pady=0,
+            fixed_height=140,
+            expand=True,
+            value_font=None,
+        ):
             card = tk.Frame(parent, bg=self.colors["card"])
             card.pack(side=side, fill="both", expand=expand, padx=10, pady=pady)
             if fixed_height:
@@ -256,7 +266,13 @@ class ExpendedoraGUI:
             content.pack(fill="both", expand=True)
             
             tk.Label(content, text=titulo.upper(), font=("Segoe UI", 10, "bold"), fg="#7F8C8D", bg=self.colors["card"]).pack(anchor="w")
-            label_valor = tk.Label(content, text=str(self.contadores[key]), font=self.fonts["big"], fg=self.colors["text"], bg=self.colors["card"])
+            label_valor = tk.Label(
+                content,
+                text=str(self.contadores[key]),
+                font=value_font or self.fonts["big"],
+                fg=self.colors["text"],
+                bg=self.colors["card"],
+            )
             label_valor.pack(anchor="w", pady=(8, 0))
             
             self.contadores_labels[key] = label_valor
@@ -453,9 +469,40 @@ class ExpendedoraGUI:
         # --- Contenido Columna Derecha (Promociones en columna) ---
         tk.Label(col_der, text="Detalle Promociones", font=("Segoe UI", 12, "bold"), bg=self.colors["bg"], fg="#7F8C8D").pack(anchor="w", pady=(0, 10), padx=10)
         
-        crear_card_contador(col_der, "promo1_contador", "Promo 1 Usadas", self.colors["primary"], side="top", pady=5, fixed_height=132, expand=False)
-        crear_card_contador(col_der, "promo2_contador", "Promo 2 Usadas", self.colors["primary"], side="top", pady=5, fixed_height=132, expand=False)
-        crear_card_contador(col_der, "promo3_contador", "Promo 3 Usadas", self.colors["primary"], side="top", pady=5, fixed_height=132, expand=False)
+        promo_counter_font = ("Segoe UI", 22, "bold")
+        crear_card_contador(
+            col_der,
+            "promo1_contador",
+            "Promo 1 Usadas",
+            self.colors["primary"],
+            side="top",
+            pady=5,
+            fixed_height=160,
+            expand=False,
+            value_font=promo_counter_font,
+        )
+        crear_card_contador(
+            col_der,
+            "promo2_contador",
+            "Promo 2 Usadas",
+            self.colors["primary"],
+            side="top",
+            pady=5,
+            fixed_height=160,
+            expand=False,
+            value_font=promo_counter_font,
+        )
+        crear_card_contador(
+            col_der,
+            "promo3_contador",
+            "Promo 3 Usadas",
+            self.colors["primary"],
+            side="top",
+            pady=5,
+            fixed_height=160,
+            expand=False,
+            value_font=promo_counter_font,
+        )
 
         # Página de simulación
         self.simulacion_frame, sim_content = self.crear_contenedor_scrollable(root)
@@ -1175,13 +1222,57 @@ class ExpendedoraGUI:
         self.actualizar_contadores_gui()
         self.guardar_configuracion(inmediato=True)
 
+    def _set_modal_grab(self, window, retries=20, retry_delay_ms=100):
+        """
+        Aplica grab_set solo cuando el Toplevel ya es visible.
+        En algunos entornos (X11 remoto/kiosk) el mapeo de ventana tarda unos ms.
+        """
+        try:
+            window.update_idletasks()
+            window.deiconify()
+            window.lift()
+        except tk.TclError:
+            return
+
+        grab_aplicado = {"done": False}
+
+        def _try_apply_grab() -> bool:
+            if grab_aplicado["done"] or not window.winfo_exists():
+                return True
+            if not window.winfo_viewable():
+                return False
+            try:
+                window.grab_set()
+                grab_aplicado["done"] = True
+                return True
+            except tk.TclError:
+                return False
+
+        def _on_map(_event=None):
+            _try_apply_grab()
+
+        window.bind("<Map>", _on_map, add="+")
+
+        def _try_grab(remaining):
+            if not window.winfo_exists():
+                return
+            if _try_apply_grab():
+                return
+
+            if remaining > 0:
+                window.after(retry_delay_ms, lambda: _try_grab(remaining - 1))
+            else:
+                print("[GUI] Aviso: no se pudo aplicar grab_set (ventana no visible).")
+
+        window.after(0, lambda: _try_grab(retries))
+
     def configurar_atajos_promociones(self):
         config_window = tk.Toplevel(self.root)
         config_window.title("Configurar atajos de promociones")
         config_window.geometry("700x360")
         config_window.configure(bg="#ffffff")
         config_window.transient(self.root)
-        config_window.grab_set()
+        self._set_modal_grab(config_window)
 
         tk.Label(
             config_window,
@@ -1479,10 +1570,11 @@ class ExpendedoraGUI:
 
         config_window = tk.Toplevel(self.root)
         config_window.title("Configurar gestor de red")
-        config_window.geometry("520x330")
+        config_window.geometry("560x470")
+        config_window.minsize(560, 470)
         config_window.configure(bg="#ffffff")
         config_window.transient(self.root)
-        config_window.grab_set()
+        self._set_modal_grab(config_window)
 
         cfg = dict(self.network_manager_cfg) if isinstance(self.network_manager_cfg, dict) else {}
 
@@ -1494,24 +1586,27 @@ class ExpendedoraGUI:
         backend_url_var = tk.StringVar(value=str(cfg.get("backend_url", self._build_backend_probe_url())))
         iface_var = tk.StringVar(value=str(cfg.get("preferred_interface", "")))
 
+        content_frame = tk.Frame(config_window, bg="#ffffff")
+        content_frame.pack(fill="both", expand=True, padx=16, pady=(14, 8))
+
         tk.Label(
-            config_window,
+            content_frame,
             text="Monitor en tiempo real + reconexión automática con NetworkManager (nmcli).",
             bg="#ffffff",
             fg="#7F8C8D",
             font=("Segoe UI", 10),
             justify="left",
-        ).pack(anchor="w", padx=16, pady=(14, 10))
+        ).pack(anchor="w", pady=(0, 10))
         tk.Checkbutton(
-            config_window,
+            content_frame,
             text="Habilitar gestor de red",
             variable=enabled_var,
             bg="#ffffff",
             font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", padx=16, pady=(0, 10))
+        ).pack(anchor="w", pady=(0, 10))
 
-        form = tk.Frame(config_window, bg="#ffffff")
-        form.pack(fill="x", padx=16, pady=(0, 8))
+        form = tk.Frame(content_frame, bg="#ffffff")
+        form.pack(fill="x", pady=(0, 8))
 
         def add_row(label, variable):
             row = tk.Frame(form, bg="#ffffff")
@@ -1527,12 +1622,12 @@ class ExpendedoraGUI:
         add_row("Interfaz preferida (ej: wlan0)", iface_var)
 
         tk.Label(
-            config_window,
+            content_frame,
             text="Tip: en Raspberry Pi usar interfaz preferida 'wlan0' o 'eth0'.",
             bg="#ffffff",
             fg="#7F8C8D",
             font=("Segoe UI", 9),
-        ).pack(anchor="w", padx=16, pady=(2, 8))
+        ).pack(anchor="w", pady=(2, 0))
 
         def guardar():
             try:
@@ -1557,9 +1652,31 @@ class ExpendedoraGUI:
             messagebox.showinfo("Gestor de red", "Configuración guardada y monitor reiniciado.")
 
         btn_row = tk.Frame(config_window, bg="#ffffff")
-        btn_row.pack(fill="x", padx=16, pady=12)
-        tk.Button(btn_row, text="Guardar", command=guardar, bg="#4CAF50", fg="white", font=("Arial", 11), bd=0).pack(side="left", padx=(0, 8))
-        tk.Button(btn_row, text="Cancelar", command=config_window.destroy, bg="#D32F2F", fg="white", font=("Arial", 11), bd=0).pack(side="left")
+        btn_row.pack(side="bottom", fill="x", padx=16, pady=(6, 12))
+        tk.Button(
+            btn_row,
+            text="Guardar",
+            command=guardar,
+            bg="#4CAF50",
+            fg="white",
+            font=("Arial", 11, "bold"),
+            activebackground="#3D8B40",
+            activeforeground="white",
+            bd=0,
+            width=12,
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            btn_row,
+            text="Cancelar",
+            command=config_window.destroy,
+            bg="#D32F2F",
+            fg="white",
+            font=("Arial", 11, "bold"),
+            activebackground="#A4281F",
+            activeforeground="white",
+            bd=0,
+            width=12,
+        ).pack(side="left")
 
     def abrir_reportes_admin(self):
         if self.username != "admin":
@@ -1571,7 +1688,7 @@ class ExpendedoraGUI:
         panel.geometry("1180x640")
         panel.configure(bg="#ffffff")
         panel.transient(self.root)
-        panel.grab_set()
+        self._set_modal_grab(panel)
 
         toolbar = tk.Frame(panel, bg="#ffffff")
         toolbar.pack(fill="x", padx=12, pady=(10, 4))
@@ -2172,7 +2289,8 @@ class ExpendedoraGUI:
             self.contadores[promo_contadores[promo]] += 1
             self.contadores_apertura[promo_contadores[promo]] += 1
             self.contadores_parciales[promo_contadores[promo]] += 1
-            self.contadores_labels[promo_contadores[promo]].config(text=f"{promo} usadas: {self.contadores[promo_contadores[promo]]}")
+            # Estos labels fueron diseñados para mostrar solo el valor numérico.
+            self.contadores_labels[promo_contadores[promo]].config(text=f"{self.contadores[promo_contadores[promo]]}")
         else:
             messagebox.showerror("Error", "Promoción no válida.")
 

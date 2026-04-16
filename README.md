@@ -86,6 +86,29 @@ Notas:
 - `preserve_files` restaura esos archivos locales luego del `git reset --hard`.
 - Define `restart_command_*` para reiniciar la app/servicio automáticamente tras update.
 
+### Telemetría API (diagnóstico 403)
+
+En `config.json` podés controlar endpoint cloud, fallback y cabeceras personalizadas:
+
+```json
+"api": {
+  "base_urls": ["http://127.0.0.1", "https://app.maquinasbonus.com"],
+  "endpoint_receptor": "AdministrationPanel/src/devices/api_receptor.php",
+  "endpoint_receptor_local": "AdministrationPanel/src/devices/api_receptor.php",
+  "endpoint_receptor_cloud": "src/devices/api_receptor.php",
+  "endpoint_receptor_cloud_fallback": "AdministrationPanel/src/devices/api_receptor.php",
+  "timeout_s": 5,
+  "headers": {
+    "X-Api-Key": ""
+  }
+}
+```
+
+Notas:
+- Ante `403/404` en cloud, el cliente intenta una vez el `endpoint_receptor_cloud_fallback` en la misma base.
+- Para diagnosticar rechazos del backend, se registran `status`, `Server`, `WWW-Authenticate` y un preview corto de respuesta.
+- El envío sigue siendo no-bloqueante: un error HTTP no frena la operación de la expendedora.
+
 ### Linux (Raspberry/MiniPC Linux)
 
 1. Prueba manual:

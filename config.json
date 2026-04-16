@@ -59,7 +59,9 @@
         "endpoint_receptor": "AdministrationPanel/src/devices/api_receptor.php",
         "endpoint_receptor_local": "AdministrationPanel/src/devices/api_receptor.php",
         "endpoint_receptor_cloud": "src/devices/api_receptor.php",
-        "timeout_s": 5
+        "endpoint_receptor_cloud_fallback": "AdministrationPanel/src/devices/api_receptor.php",
+        "timeout_s": 5,
+        "headers": {}
     },
     "admin": {
         "dni_admin": "00000000"
