@@ -96,7 +96,7 @@ En `config.json` podés controlar endpoint cloud, fallback y cabeceras personali
   "endpoint_receptor": "AdministrationPanel/src/devices/api_receptor.php",
   "endpoint_receptor_local": "AdministrationPanel/src/devices/api_receptor.php",
   "endpoint_receptor_cloud": "src/devices/api_receptor.php",
-  "endpoint_receptor_cloud_fallback": "AdministrationPanel/src/devices/api_receptor.php",
+  "endpoint_receptor_cloud_fallback": "",
   "timeout_s": 5,
   "headers": {
     "X-Api-Key": ""
@@ -105,7 +105,8 @@ En `config.json` podés controlar endpoint cloud, fallback y cabeceras personali
 ```
 
 Notas:
-- Ante `403/404` en cloud, el cliente intenta una vez el `endpoint_receptor_cloud_fallback` en la misma base.
+- `endpoint_receptor_cloud_fallback` es opcional. Si está vacío, no se reintenta fallback cloud.
+- Si se define, ante `403/404` en cloud el cliente intenta una vez ese fallback en la misma base.
 - Para diagnosticar rechazos del backend, se registran `status`, `Server`, `WWW-Authenticate` y un preview corto de respuesta.
 - El envío sigue siendo no-bloqueante: un error HTTP no frena la operación de la expendedora.
 

@@ -20,6 +20,22 @@ class _FakeConfigRepo:
             "maquina": {"codigo_hardware": "EXP_1", "tipo_maquina": 1},
         }
 
+class _FakeConfigRepoNoFallback:
+    def load(self):
+        return {
+            "api": {
+                "base_urls": ["http://127.0.0.1", "https://app.maquinasbonus.com"],
+                "endpoint_receptor": "AdministrationPanel/src/devices/api_receptor.php",
+                "endpoint_receptor_local": "AdministrationPanel/src/devices/api_receptor.php",
+                "endpoint_receptor_cloud": "src/devices/api_receptor.php",
+                "endpoint_receptor_cloud_fallback": "",
+                "timeout_s": 7,
+                "headers": {},
+            },
+            "admin": {"dni_admin": "123"},
+            "maquina": {"codigo_hardware": "EXP_1", "tipo_maquina": 1},
+        }
+
 
 class TelemetryClientTest(unittest.TestCase):
     def setUp(self):
@@ -80,6 +96,25 @@ class TelemetryClientTest(unittest.TestCase):
                 "http://127.0.0.1/AdministrationPanel/src/devices/api_receptor.php",
                 "https://app.maquinasbonus.com/src/devices/api_receptor.php",
                 "https://app.maquinasbonus.com/AdministrationPanel/src/devices/api_receptor.php",
+            ],
+        )
+
+    @patch("infra.telemetry_client.requests.post")
+    def test_post_body_does_not_retry_when_cloud_fallback_disabled(self, post_mock):
+        client = TelemetryClient(_FakeConfigRepoNoFallback())
+        local_ok = unittest.mock.Mock(status_code=200, text="OK", headers={})
+        cloud_forbidden = unittest.mock.Mock(status_code=403, text="forbidden", headers={})
+        post_mock.side_effect = [local_ok, cloud_forbidden]
+
+        client.post_body({"action": 1}, "heartbeat")
+
+        self.assertEqual(post_mock.call_count, 2)
+        called_urls = [args[0] for args, _kwargs in post_mock.call_args_list]
+        self.assertEqual(
+            called_urls,
+            [
+                "http://127.0.0.1/AdministrationPanel/src/devices/api_receptor.php",
+                "https://app.maquinasbonus.com/src/devices/api_receptor.php",
             ],
         )
 
