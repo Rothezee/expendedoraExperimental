@@ -36,6 +36,13 @@ class AuthRepositoryTest(unittest.TestCase):
         self.assertEqual(row, (1, "cajero", 7))
         self.assertTrue(cursor.execute.called)
 
+    @patch("infra.auth_repository_mysql.mysql.connector.connect")
+    def test_create_cashier_require_remote_raises_when_unreachable(self, connect_mock):
+        connect_mock.side_effect = RuntimeError("connect failed")
+        repo = AuthRepositoryMySQL(_FakeConfigRepo())
+        with self.assertRaises(ConnectionError):
+            repo.create_cashier("cajero", "1234", require_remote=True)
+
 
 if __name__ == "__main__":
     unittest.main()

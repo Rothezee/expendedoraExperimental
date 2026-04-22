@@ -11,9 +11,11 @@ from services.counter_service import CounterService
 from services.network_manager_service import NetworkManagerService
 from services.session_service import SessionService
 
-urlCierres = "AdministrationPanel/src/expendedora/insert_close_expendedora.php"  # URL DE CIERRES
+urlCierresLocal = "AdministrationPanel/src/expendedora/insert_close_expendedora.php"  # URL DE CIERRES (LOCAL)
+urlCierresCloud = "src/expendedora/insert_close_expendedora.php"  # URL DE CIERRES (CLOUD)
 urlDatos = "esp32_project/expendedora/insert_data_expendedora.php"  # URL DE REPORTES
-urlSubcierre = "AdministrationPanel/src/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES
+urlSubcierreLocal = "AdministrationPanel/src/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES (LOCAL)
+urlSubcierreCloud = "src/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES (CLOUD)
 DNS = "https://app.maquinasbonus.com/"  # DNS servidor
 DNSLocal = "http://127.0.0.1/"  # DNS servidor local
 
@@ -25,7 +27,7 @@ DEFAULT_PROMO_HOTKEYS = {
 
 import threading as _threading
 
-def _post_en_hilo(url, datos, descripcion=""):
+def _post_en_hilo(url, datos, descripcion="", retry_without_cashier_id=False):
     """
     Envía un POST HTTP en un hilo separado con timeout.
     Nunca bloquea el hilo de Tkinter aunque no haya internet.
@@ -34,14 +36,41 @@ def _post_en_hilo(url, datos, descripcion=""):
         try:
             resp = requests.post(url, json=datos, timeout=5)
             print(f"[NET] {descripcion} → {resp.status_code}")
+            body_preview = ""
+            if resp.status_code >= 400:
+                body_preview = str(resp.text or "").strip().replace("\n", " ")
+                if len(body_preview) > 240:
+                    body_preview = f"{body_preview[:240]}..."
+                print(f"[NET WARN] {descripcion} body: {body_preview or '-'}")
+
+            # Compatibilidad backend remoto: si id_cajero no coincide entre entornos
+            # reintentamos usando usuario (employee_id/usuario_cajero) sin id numérico.
+            if (
+                retry_without_cashier_id
+                and resp.status_code == 404
+                and "cajero no encontrado" in (body_preview or "").lower()
+                and isinstance(datos, dict)
+                and "id_cajero" in datos
+            ):
+                retry_payload = dict(datos)
+                retry_payload.pop("id_cajero", None)
+                retry_desc = f"{descripcion} (retry sin id_cajero)"
+                retry_resp = requests.post(url, json=retry_payload, timeout=5)
+                print(f"[NET] {retry_desc} → {retry_resp.status_code}")
+                if retry_resp.status_code >= 400:
+                    retry_body = str(retry_resp.text or "").strip().replace("\n", " ")
+                    if len(retry_body) > 240:
+                        retry_body = f"{retry_body[:240]}..."
+                    print(f"[NET WARN] {retry_desc} body: {retry_body or '-'}")
         except requests.exceptions.RequestException as e:
             print(f"[NET ERROR] {descripcion}: {e}")
     _threading.Thread(target=_enviar, daemon=True).start()
 
 class ExpendedoraGUI:
-    def __init__(self, root, username, core_controller=None):
+    def __init__(self, root, username, core_controller=None, cashier_id=None):
         self.root = root
         self.username = username
+        self.cashier_id = cashier_id
         self.core = core_controller or CoreController()
         self.root.title("Expendedora - Control") # El título no será visible
         self.root.attributes('-fullscreen', True) # Ocupa 100% de pantalla y oculta la barra de título
@@ -1215,8 +1244,8 @@ class ExpendedoraGUI:
             self.contadores_apertura,
             event_type="apertura",
         )
-        _post_en_hilo(DNS + urlCierres, apertura_info, "Apertura automática remota")
-        _post_en_hilo(DNSLocal + urlCierres, apertura_info, "Apertura automática local")
+        _post_en_hilo(DNS + urlCierresCloud, apertura_info, "Apertura automática remota")
+        _post_en_hilo(DNSLocal + urlCierresLocal, apertura_info, "Apertura automática local")
 
         self.operacion_config["ultima_apertura_fecha"] = hoy
         self.actualizar_contadores_gui()
@@ -2086,8 +2115,8 @@ class ExpendedoraGUI:
         )
         
         # Enviar cierre inicial al servidor remoto y local (no bloquea la GUI)
-        _post_en_hilo(DNS + urlCierres, cierre_inicial, "Apertura remota")
-        _post_en_hilo(DNSLocal + urlCierres, cierre_inicial, "Apertura local")
+        _post_en_hilo(DNS + urlCierresCloud, cierre_inicial, "Apertura remota")
+        _post_en_hilo(DNSLocal + urlCierresLocal, cierre_inicial, "Apertura local")
 
         self.operacion_config["ultima_apertura_fecha"] = datetime.now().strftime("%Y-%m-%d")
         
@@ -2112,8 +2141,8 @@ class ExpendedoraGUI:
         messagebox.showinfo("Cierre", f"Cierre del día realizado:\n{mensaje_cierre}")
         
         # Enviar datos al servidor (no bloquea la GUI)
-        _post_en_hilo(DNS + urlCierres, cierre_info, "Cierre remoto")
-        _post_en_hilo(DNSLocal + urlCierres, cierre_info, "Cierre local")
+        _post_en_hilo(DNS + urlCierresCloud, cierre_info, "Cierre remoto")
+        _post_en_hilo(DNSLocal + urlCierresLocal, cierre_info, "Cierre local")
         
         # IMPORTANTE: Guardar los contadores parciales ANTES de resetear
         # para que el subcierre tenga los datos correctos
@@ -2136,7 +2165,12 @@ class ExpendedoraGUI:
 
     def realizar_cierre_parcial(self):
         # Realiza el cierre parcial
-        subcierre_info = self.session_service.build_partial_close(self.device_id, self.contadores_parciales, self.username)
+        subcierre_info = self.session_service.build_partial_close(
+            self.device_id,
+            self.contadores_parciales,
+            self.username,
+            cashier_id=self.cashier_id,
+        )
 
         mensaje_subcierre = (
             f"Fichas expendidas: {subcierre_info['partial_fichas']}\n"
@@ -2150,8 +2184,13 @@ class ExpendedoraGUI:
         messagebox.showinfo("Cierre Parcial", f"Cierre parcial realizado:\n{mensaje_subcierre}")
 
         # Enviar datos al servidor (no bloquea la GUI)
-        _post_en_hilo(DNS + urlSubcierre, subcierre_info, "Subcierre remoto")
-        _post_en_hilo(DNSLocal + urlSubcierre, subcierre_info, "Subcierre local")
+        _post_en_hilo(
+            DNS + urlSubcierreCloud,
+            subcierre_info,
+            "Subcierre remoto",
+            retry_without_cashier_id=True,
+        )
+        _post_en_hilo(DNSLocal + urlSubcierreLocal, subcierre_info, "Subcierre local")
 
         # Reiniciar los contadores parciales
         self.contadores_parciales = self.counter_service.default_counters()
@@ -2186,17 +2225,21 @@ class ExpendedoraGUI:
             contadores_a_enviar = self.contadores_parciales
             print("[GUI] Usando contadores parciales actuales para subcierre")
         
-        # Solo enviar subcierre si hay datos relevantes
-        tiene_datos = self.counter_service.has_activity(contadores_a_enviar)
-        
-        if tiene_datos:
-            Subcierre_info = self.session_service.build_partial_close(self.device_id, contadores_a_enviar, self.username)
-
-            # Enviar datos al servidor (no bloquea la GUI)
-            _post_en_hilo(DNS + urlSubcierre, Subcierre_info, "Cierre sesion remoto")
-            _post_en_hilo(DNSLocal + urlSubcierre, Subcierre_info, "Cierre sesion local")
-        else:
-            print("[GUI] No hay datos para enviar en el subcierre")
+        # Siempre enviar subcierre al cerrar sesión para dejar traza de turno,
+        # incluso cuando los contadores están en cero.
+        subcierre_info = self.session_service.build_partial_close(
+            self.device_id,
+            contadores_a_enviar,
+            self.username,
+            cashier_id=self.cashier_id,
+        )
+        _post_en_hilo(
+            DNS + urlSubcierreCloud,
+            subcierre_info,
+            "Cierre sesion remoto",
+            retry_without_cashier_id=True,
+        )
+        _post_en_hilo(DNSLocal + urlSubcierreLocal, subcierre_info, "Cierre sesion local")
 
         # Reiniciar los contadores para la próxima sesión
         self.contadores = self.counter_service.default_counters()
@@ -2211,12 +2254,28 @@ class ExpendedoraGUI:
         self.guardar_configuracion(inmediato=True)
 
         messagebox.showinfo("Cerrar Sesión", "La sesión ha sido cerrada.")
+        if hasattr(self, "_after_id"):
+            try:
+                self.root.after_cancel(self._after_id)
+            except Exception:
+                pass
         self.root.destroy()
 
         # Crear nueva instancia de UserManagement y pasar el callback
-        def iniciar_expendedora(username):
+        def iniciar_expendedora(user_session):
+            username = "admin"
+            cashier_id = None
+            if isinstance(user_session, dict):
+                username = str(user_session.get("username", "")).strip() or "admin"
+                raw_cashier = user_session.get("cashier_id")
+                try:
+                    cashier_id = int(raw_cashier) if raw_cashier is not None else None
+                except (TypeError, ValueError):
+                    cashier_id = None
+            else:
+                username = str(user_session)
             nuevo_root = tk.Tk()
-            app = ExpendedoraGUI(nuevo_root, username)
+            app = ExpendedoraGUI(nuevo_root, username, cashier_id=cashier_id)
             nuevo_root.mainloop()
 
         user_management = UserManagement(iniciar_expendedora)

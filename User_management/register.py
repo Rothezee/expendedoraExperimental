@@ -43,11 +43,29 @@ class RegisterWindow:
             self.warning_label.config(text="Por favor, complete todos los campos")
             return
 
-        if add_user(username, password):
-            messagebox.showinfo("Registro", "Registro exitoso")
-            self.window.destroy()
-        else:
-            self.warning_label.config(text="El usuario ya existe")
+        try:
+            result = add_user(username, password)
+            if isinstance(result, bool):
+                ok = result
+                mode = "legacy"
+                msg = "Registro exitoso" if ok else "El usuario ya existe"
+            else:
+                ok = bool(result.get("ok"))
+                mode = str(result.get("mode", ""))
+                msg = str(result.get("message", "")).strip()
+
+            if ok:
+                if mode.startswith("offline_pending"):
+                    messagebox.showwarning("Registro (offline)", msg or "Usuario guardado en local. Se sincronizará al recuperar internet.")
+                else:
+                    messagebox.showinfo("Registro", msg or "Registro exitoso")
+                self.window.destroy()
+            else:
+                self.warning_label.config(text=msg or "El usuario ya existe")
+        except Exception as exc:
+            msg = str(exc).strip() or "No se pudo registrar el usuario en la base remota."
+            self.warning_label.config(text=msg)
+            messagebox.showerror("Registro", msg)
 
 if __name__ == "__main__":
     root = tk.Tk()

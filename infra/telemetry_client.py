@@ -100,8 +100,7 @@ class TelemetryClient:
             dni_admin=str(admin.get("dni_admin", "")),
             codigo_hardware=str(maquina.get("codigo_hardware", "")),
             tipo_maquina=1,
-            fichas=int(fichas),
-            dinero=float(dinero),
+            payload={"fichas": int(fichas), "dinero": float(dinero)},
         ).to_dict()
 
     def post_body(self, body: Dict[str, Any], context: str = "api_receptor") -> None:

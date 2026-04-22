@@ -47,9 +47,21 @@ class LoginWindow:
         user = get_user(nombre=usuario, contraceña=password)
 
         if user:
+            cashier_id = None
+            username_login = usuario
+            if isinstance(user, (tuple, list)):
+                if len(user) > 0 and user[0] is not None:
+                    try:
+                        cashier_id = int(user[0])
+                    except (TypeError, ValueError):
+                        cashier_id = None
+                if len(user) > 1 and user[1]:
+                    username_login = str(user[1])
+
             messagebox.showinfo("Login", "Login exitoso")
             self.window.destroy()  # Cierra la ventana de login
-            self.success_callback(usuario)  # Llama al callback de éxito con el nombre de usuario
+            # Enviamos el username visible y el id_cajero real para subcierres remotos.
+            self.success_callback({"username": username_login, "cashier_id": cashier_id})
         else:
             messagebox.showerror("Login", "Usuario o contraseña incorrectos")
             self.warning_label.config(text="Usuario o contraseña incorrectos")

@@ -28,14 +28,14 @@
         "fichas_cambio": 0
     },
     "contadores_apertura": {
-        "fichas_expendidas": 0,
-        "dinero_ingresado": 0.0,
+        "fichas_expendidas": 4,
+        "dinero_ingresado": 4000.0,
         "promo1_contador": 0,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0,
         "fichas_devolucion": 0,
-        "fichas_normales": 0,
+        "fichas_normales": 4,
         "fichas_promocion": 0,
         "fichas_cambio": 0
     },
@@ -119,11 +119,11 @@
             "database": "sistemadeadministracion"
         },
         "production": {
-            "host": "localhost",
+            "host": "2a02:4780:13:1234::79",
             "port": 3306,
-            "user": "root",
-            "password": "",
-            "database": "sistemadeadministracion"
+            "user": "u868087036_administrador",
+            "password": "39090169aA",
+            "database": "u868087036_sistemadeadmin"
         }
     },
     "updater": {
@@ -142,7 +142,7 @@
         ]
     },
     "operacion": {
-        "ultima_apertura_fecha": "2026-04-15"
+        "ultima_apertura_fecha": "2026-04-16"
     },
     "atajos": {
         "promociones": {

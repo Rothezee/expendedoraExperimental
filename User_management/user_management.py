@@ -33,9 +33,9 @@ class UserManagement:
     def open_register(self):
         RegisterWindow(self.root)
 
-    def on_login_success(self, username):
+    def on_login_success(self, user_session):
         self.root.destroy()  # Cerrar la ventana de gestión de usuarios
-        self.main_callback(username)  # Pasar el nombre de usuario a main
+        self.main_callback(user_session)
 
     def run(self):
         self.root.mainloop()

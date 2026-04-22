@@ -72,8 +72,7 @@ class TelemetryPayload:
     dni_admin: str
     codigo_hardware: str
     tipo_maquina: int
-    fichas: int = 0
-    dinero: float = 0.0
+    payload: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         body = {
@@ -83,8 +82,7 @@ class TelemetryPayload:
             "tipo_maquina": self.tipo_maquina,
         }
         if self.action == 2:
-            body["fichas"] = int(self.fichas)
-            body["dinero"] = float(self.dinero)
+            body["payload"] = dict(self.payload)
         return body
 
 
