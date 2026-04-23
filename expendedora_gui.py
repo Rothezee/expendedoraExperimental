@@ -184,7 +184,7 @@ class ExpendedoraGUI:
         self.header_title_frame.pack(side="left", fill="y", padx=20, pady=10)
         tk.Label(
             self.header_title_frame,
-            text="Expendedora Control",
+            text="Expendedora",
             bg=self.colors["header"],
             fg=self.colors["text"],
             font=self.fonts["h2"],
