@@ -1,6 +1,10 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 from datetime import datetime
+import os
+import subprocess
+import time
+from pathlib import Path
 import requests
 from User_management import UserManagement
 from expendedora_core import CoreController
@@ -600,6 +604,16 @@ class ExpendedoraGUI:
         self.footer_label = tk.Label(self.footer_frame, text="", bg=self.colors["sidebar"], fg="#BDC3C7", font=("Segoe UI", 10))
         self.footer_label.pack(pady=5)
 
+        # --- Toast update (abajo izquierda) ---
+        self._repo_root = Path(__file__).resolve().parent
+        self._update_toast = None
+        self._update_toast_visible = False
+        self._update_check_running = False
+        self._update_snooze_until_ts = 0.0
+        self._update_last_check_ts = 0.0
+        self._update_last_remote_hash = None
+        self._init_update_toast()
+
         self.actualizar_fecha_hora()
 
         # --- ATAJOS DE TECLADO ---
@@ -683,6 +697,165 @@ class ExpendedoraGUI:
         # Reiniciar el contador de sesión al iniciar la GUI
         shared_buffer.gui_to_core_queue.put({'type': 'reset_sesion'})
         print(f"[GUI] Sesión iniciada para usuario: {username}")
+
+    def _init_update_toast(self):
+        toast = tk.Frame(self.root, bg="#1F2A36", bd=0, relief="flat")
+        toast.place_forget()
+
+        title = tk.Label(
+            toast,
+            text="Actualización disponible",
+            bg="#1F2A36",
+            fg="white",
+            font=("Segoe UI", 10, "bold"),
+        )
+        title.pack(anchor="w", padx=12, pady=(10, 2))
+
+        subtitle = tk.Label(
+            toast,
+            text="Hay cambios nuevos. ¿Querés actualizar ahora?",
+            bg="#1F2A36",
+            fg="#D5DBDB",
+            font=("Segoe UI", 9),
+            wraplength=260,
+            justify="left",
+        )
+        subtitle.pack(anchor="w", padx=12, pady=(0, 10))
+
+        btn_row = tk.Frame(toast, bg="#1F2A36")
+        btn_row.pack(fill="x", padx=12, pady=(0, 12))
+
+        def _later():
+            # “Luego”: ocultar y no molestar por 15 min
+            self._update_snooze_until_ts = time.time() + (15 * 60)
+            self._hide_update_toast()
+
+        def _now():
+            self._hide_update_toast()
+            self._run_update_now()
+
+        tk.Button(
+            btn_row,
+            text="Actualizar ahora",
+            command=_now,
+            bg="#2ECC71",
+            fg="white",
+            activebackground="#27AE60",
+            activeforeground="white",
+            bd=0,
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=6,
+        ).pack(side="left")
+        tk.Button(
+            btn_row,
+            text="Luego",
+            command=_later,
+            bg="#566573",
+            fg="white",
+            activebackground="#4D5B66",
+            activeforeground="white",
+            bd=0,
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=6,
+        ).pack(side="left", padx=(8, 0))
+
+        self._update_toast = toast
+
+    def _show_update_toast(self):
+        if not self._update_toast or self._update_toast_visible:
+            return
+        # Abajo izquierda con margen (por encima del footer)
+        try:
+            self._update_toast.place(x=14, rely=1.0, y=-(30 + 14), anchor="sw")
+            self._update_toast.lift()
+            self._update_toast_visible = True
+        except Exception:
+            pass
+
+    def _hide_update_toast(self):
+        if not self._update_toast or not self._update_toast_visible:
+            return
+        try:
+            self._update_toast.place_forget()
+        finally:
+            self._update_toast_visible = False
+
+    def _check_updates_async(self):
+        if self._update_check_running:
+            return
+        if time.time() < self._update_snooze_until_ts:
+            return
+        self._update_check_running = True
+
+        def _worker():
+            try:
+                cfg = self.config_repository.load()
+                settings = cfg.get("updater", {}) if isinstance(cfg.get("updater", {}), dict) else {}
+                remote = str(settings.get("remote", "origin"))
+                branch = str(settings.get("branch", "main"))
+                enabled = bool(settings.get("enabled", False))
+                if not enabled:
+                    return {"available": False}
+
+                # fetch + compare hashes
+                subprocess.run(
+                    ["git", "fetch", remote, branch],
+                    cwd=str(self._repo_root),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                local = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(self._repo_root), text=True).strip()
+                remote_hash = subprocess.check_output(
+                    ["git", "rev-parse", f"{remote}/{branch}"],
+                    cwd=str(self._repo_root),
+                    text=True,
+                ).strip()
+                return {"available": local != remote_hash, "remote_hash": remote_hash}
+            except Exception:
+                return {"available": False}
+
+        def _done(result):
+            try:
+                self._update_last_remote_hash = result.get("remote_hash")
+                if result.get("available"):
+                    self._show_update_toast()
+                else:
+                    self._hide_update_toast()
+            finally:
+                self._update_check_running = False
+
+        def _run_and_callback():
+            res = _worker()
+            self.root.after(0, lambda: _done(res))
+
+        _threading.Thread(target=_run_and_callback, daemon=True).start()
+
+    def _run_update_now(self):
+        # Ejecuta updater y fuerza reinicio de la app (kiosk la vuelve a levantar)
+        def _worker():
+            try:
+                cmd = [self._python_executable(), str(self._repo_root / "updater" / "auto_updater.py"), "--once"]
+                subprocess.run(cmd, cwd=str(self._repo_root), check=False)
+            except Exception as exc:
+                print(f"[UPDATER UI] Error al actualizar: {exc}")
+                return
+            try:
+                # Salir para que el launcher kiosk reinicie con el nuevo código
+                self.root.after(0, self.root.destroy)
+            except Exception:
+                pass
+
+        _threading.Thread(target=_worker, daemon=True).start()
+
+    def _python_executable(self) -> str:
+        # preferir venv si existe
+        venv_py = self._repo_root / ".venv" / "bin" / "python3"
+        if venv_py.exists():
+            return str(venv_py)
+        return "python3" if os.name != "nt" else "python"
 
     def crear_contenedor_scrollable(self, parent):
         """Crea un frame con scrollbar vertical"""
@@ -2384,6 +2557,10 @@ class ExpendedoraGUI:
         self.actualizar_estado_operacion_ui()
         # Refresco periódico defensivo para asegurar render de tarjetas de tolvas en kiosk.
         self.actualizar_tolvas_gui()
+        # Check de updates (cada ~30s, no bloqueante)
+        if (time.time() - self._update_last_check_ts) > 30:
+            self._update_last_check_ts = time.time()
+            self._check_updates_async()
         self._after_id = self.root.after(1000, self.actualizar_fecha_hora)  # Llamar a esta función cada segundo
 
 if __name__ == "__main__":
