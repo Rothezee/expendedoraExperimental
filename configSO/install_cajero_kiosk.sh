@@ -88,8 +88,19 @@ cat > /etc/lightdm/lightdm.conf.d/50-expendedora-kiosk.conf <<EOF
 [Seat:*]
 autologin-user=${KIOSK_USER}
 autologin-user-timeout=0
-user-session=LXDE-pi
+user-session=rpd-labwc
+autologin-session=rpd-labwc
 EOF
+
+# Algunas imágenes de Raspberry priorizan /etc/lightdm/lightdm.conf por encima
+# de snippets; forzamos también allí para evitar que siga autologueando "clue".
+if [[ -f /etc/lightdm/lightdm.conf ]]; then
+  sed -i "s/^autologin-user=.*/autologin-user=${KIOSK_USER}/" /etc/lightdm/lightdm.conf || true
+  sed -i "s/^#autologin-user=.*/autologin-user=${KIOSK_USER}/" /etc/lightdm/lightdm.conf || true
+  sed -i "s/^#autologin-user-timeout=.*/autologin-user-timeout=0/" /etc/lightdm/lightdm.conf || true
+  sed -i "s/^autologin-session=.*/autologin-session=rpd-labwc/" /etc/lightdm/lightdm.conf || true
+  sed -i "s/^#autologin-session=.*/autologin-session=rpd-labwc/" /etc/lightdm/lightdm.conf || true
+fi
 
 echo "[4/8] Preparando launcher kiosk..."
 KIOSK_HOME="/home/${KIOSK_USER}"
@@ -109,6 +120,8 @@ xset s off || true
 xset -dpms || true
 xset s noblank || true
 unclutter -idle 0.2 -root || true
+# Ocultar panel/barra si existe en la sesión.
+pkill -f "wf-panel-pi|lxpanel|tint2|waybar" || true
 
 start_app() {
   cd "\${APP_PATH}"
@@ -138,6 +151,7 @@ while true; do
     start_app
     sleep 2
   fi
+  pkill -f "wf-panel-pi|lxpanel|tint2|waybar" || true
   fullscreen_app
   sleep 2
 done
@@ -159,9 +173,31 @@ X-GNOME-Autostart-enabled=true
 EOF
 chown -R "${KIOSK_USER}:${KIOSK_USER}" "${KIOSK_HOME}/.config"
 
+# Autostart específico para labwc (Raspberry OS nuevo).
+mkdir -p "${KIOSK_HOME}/.config/labwc"
+cat > "${KIOSK_HOME}/.config/labwc/autostart" <<EOF
+#!/bin/sh
+${LAUNCHER} &
+EOF
+chmod +x "${KIOSK_HOME}/.config/labwc/autostart"
+chown -R "${KIOSK_USER}:${KIOSK_USER}" "${KIOSK_HOME}/.config/labwc"
+
+# Fallback: ejecutar launcher también desde .xprofile.
+cat > "${KIOSK_HOME}/.xprofile" <<EOF
+#!/bin/sh
+${LAUNCHER} &
+EOF
+chmod +x "${KIOSK_HOME}/.xprofile"
+chown "${KIOSK_USER}:${KIOSK_USER}" "${KIOSK_HOME}/.xprofile"
+
 echo "[6/8] Ajustando permisos de app..."
 if [[ -d "${APP_PATH}" ]]; then
   chmod -R a+rX "${APP_PATH}" || true
+  # Permite al cajero atravesar directorios del admin (home/Documents).
+  chmod o+x "/home/${ADMIN_USER}" || true
+  chmod o+x "/home/${ADMIN_USER}/Documents" || true
+  apt-get install -y --no-install-recommends acl >/dev/null || true
+  setfacl -R -m u:${KIOSK_USER}:rx "${APP_PATH}" || true
 else
   echo "ADVERTENCIA: no existe APP_PATH (${APP_PATH}). Ajustalo con --app-path."
 fi

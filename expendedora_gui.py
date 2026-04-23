@@ -921,7 +921,27 @@ class ExpendedoraGUI:
     def actualizar_tolvas_gui(self):
         estados = self.core.get_tolvas_status()
         if not estados:
-            return
+            # Fallback defensivo: en algunos arranques de Raspberry el core puede
+            # demorar en publicar estado de tolvas durante los primeros segundos.
+            hoppers_cfg = self.maquina_hoppers if isinstance(self.maquina_hoppers, list) else []
+            if not hoppers_cfg:
+                return
+            estados = []
+            for idx, hopper in enumerate(hoppers_cfg, start=1):
+                if not isinstance(hopper, dict):
+                    continue
+                estados.append(
+                    {
+                        "id": int(hopper.get("id", idx)),
+                        "nombre": str(hopper.get("nombre", f"Tolva {idx}")),
+                        "seleccionada": idx == 1,
+                        "trabada": False,
+                        "calibrando": False,
+                        "calibracion_progreso": 0,
+                    }
+                )
+            if not estados:
+                return
 
         for estado in estados:
             tolva_id = estado["id"]
@@ -2362,6 +2382,8 @@ class ExpendedoraGUI:
         current_time = now.strftime("%Y-%m-%d %H:%M:%S")
         self.footer_label.config(text=current_time)  # Actualizar el label del footer
         self.actualizar_estado_operacion_ui()
+        # Refresco periódico defensivo para asegurar render de tarjetas de tolvas en kiosk.
+        self.actualizar_tolvas_gui()
         self._after_id = self.root.after(1000, self.actualizar_fecha_hora)  # Llamar a esta función cada segundo
 
 if __name__ == "__main__":
