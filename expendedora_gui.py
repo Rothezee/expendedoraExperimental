@@ -213,6 +213,29 @@ class ExpendedoraGUI:
         self.status_last_event_lbl.pack(side="left", padx=4)
         self.status_network_lbl = tk.Label(self.header_status_frame, text="Red: ...", bg="#D6EAF8", fg="#1B4F72", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
         self.status_network_lbl.pack(side="left", padx=4)
+
+        def _destrabar_tolva_seleccionada():
+            try:
+                self.core.request_unjam()
+                messagebox.showinfo("Destrabar", "Se solicitó destrabe (retroceso) en la tolva seleccionada.")
+            except Exception as e:
+                messagebox.showerror("Destrabar", f"No se pudo solicitar destrabe: {e}")
+
+        self.btn_destrabar = tk.Button(
+            self.header_status_frame,
+            text="Destrabar",
+            command=_destrabar_tolva_seleccionada,
+            bg="#F39C12",
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            bd=0,
+            padx=14,
+            pady=6,
+            activebackground="#D68910",
+            activeforeground="white",
+            cursor="hand2",
+        )
+        self.btn_destrabar.pack(side="left", padx=6)
         self._ultimo_evento_core_ts = None
         
 

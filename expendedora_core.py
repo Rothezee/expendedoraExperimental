@@ -94,6 +94,17 @@ DEFAULT_HEARTBEAT_INTERVALO_S = 600  # 10 minutos
 gui_actualizar_funcion = None  # Función simple que actualiza la GUI cuando cambian los contadores
 gui_alerta_motor_funcion = None  # Función para alertar sobre motor trabado
 
+# --- DESTRABE (RETROCESO / INVERSIÓN) ---
+DEFAULT_DESTRABE_ENABLED = True
+DEFAULT_DESTRABE_AUTO_ON_TIMEOUT = True
+DEFAULT_DESTRABE_RETROCESO_S = 1.5
+DEFAULT_DESTRABE_MAX_INTENTOS = 1
+DEFAULT_DESTRABE_COOLDOWN_S = 2.0
+
+_motor_io_lock = threading.Lock()
+_destrabe_request_lock = threading.Lock()
+_destrabe_requested = {"tolva_id": None, "ts": 0.0}
+
 # Variable global para controlar el bloqueo por emergencia
 bloqueo_emergencia = False
 _tolvas_lock = threading.Lock()
@@ -140,6 +151,21 @@ def desbloquear_motor():
     print("[CORE] Motor desbloqueado por usuario, reanudando operación...")
 
 
+def solicitar_destrabe(tolva_id=None):
+    """
+    Solicita un destrabe manual (retroceso) para una tolva.
+    Si tolva_id es None, usa la tolva seleccionada actualmente.
+    """
+    global _destrabe_requested
+    try:
+        tolva_id_int = int(tolva_id) if tolva_id is not None else None
+    except (TypeError, ValueError):
+        tolva_id_int = None
+    with _destrabe_request_lock:
+        _destrabe_requested = {"tolva_id": tolva_id_int, "ts": time.time()}
+    print(f"[CORE] Solicitud de destrabe recibida (tolva_id={tolva_id_int})")
+
+
 def _cargar_tolvas_desde_config():
     global _tolvas, _ventana_pulso_tardio_por_tolva
     cfg = cargar_configuracion()
@@ -157,12 +183,18 @@ def _cargar_tolvas_desde_config():
                 "id": int(hopper.get("id", fallback["id"])),
                 "nombre": str(hopper.get("nombre", fallback["nombre"])),
                 "motor_pin": int(hopper.get("motor_pin", fallback["motor_pin"])),
+                "motor_pin_rev": (
+                    int(hopper.get("motor_pin_rev"))
+                    if hopper.get("motor_pin_rev") is not None and str(hopper.get("motor_pin_rev")).strip() != ""
+                    else None
+                ),
                 "sensor_pin": int(hopper.get("sensor_pin", fallback["sensor_pin"])),
                 "calibracion": dict(
                     hopper.get("calibracion", fallback.get("calibracion", {}))
                     if isinstance(hopper.get("calibracion", {}), dict)
                     else fallback.get("calibracion", {})
                 ),
+                "destrabe": dict(hopper.get("destrabe", {})) if isinstance(hopper.get("destrabe", {}), dict) else {},
             }
         )
     while len(normalized) < 3:
@@ -220,6 +252,84 @@ def _setup_gpio_tolvas():
         GPIO.setup(tolva["sensor_pin"], GPIO.IN, pull_up_down=GPIO.PUD_UP)
         GPIO.setup(tolva["motor_pin"], GPIO.OUT)
         GPIO.output(tolva["motor_pin"], GPIO.LOW)
+        motor_rev = tolva.get("motor_pin_rev")
+        if motor_rev:
+            GPIO.setup(int(motor_rev), GPIO.OUT)
+            GPIO.output(int(motor_rev), GPIO.LOW)
+
+
+def _motor_set(tolva, mode):
+    """
+    mode: 'off' | 'fwd' | 'rev'
+    Con 2 relés: motor_pin = adelante, motor_pin_rev = reversa.
+    """
+    fwd = int(tolva["motor_pin"])
+    rev = tolva.get("motor_pin_rev")
+    rev = int(rev) if rev else None
+    with _motor_io_lock:
+        if mode == "off":
+            GPIO.output(fwd, GPIO.LOW)
+            if rev:
+                GPIO.output(rev, GPIO.LOW)
+            return
+        if mode == "fwd":
+            if rev:
+                GPIO.output(rev, GPIO.LOW)
+            GPIO.output(fwd, GPIO.HIGH)
+            return
+        if mode == "rev":
+            if not rev:
+                GPIO.output(fwd, GPIO.LOW)
+                return
+            GPIO.output(fwd, GPIO.LOW)
+            GPIO.output(rev, GPIO.HIGH)
+            return
+
+
+def _motor_off_all(tolvas_local):
+    for t in tolvas_local:
+        _motor_set(t, "off")
+
+
+def _get_destrabe_cfg(selected_tolva, cfg):
+    machine = cfg.get("maquina", {}) if isinstance(cfg.get("maquina", {}), dict) else {}
+    base = machine.get("destrabe", {}) if isinstance(machine.get("destrabe", {}), dict) else {}
+    per_tolva = selected_tolva.get("destrabe", {}) if isinstance(selected_tolva.get("destrabe", {}), dict) else {}
+    enabled = bool(per_tolva.get("enabled", base.get("enabled", DEFAULT_DESTRABE_ENABLED)))
+    auto_on_timeout = bool(per_tolva.get("auto_on_timeout", base.get("auto_on_timeout", DEFAULT_DESTRABE_AUTO_ON_TIMEOUT)))
+    try:
+        retroceso_s = float(per_tolva.get("retroceso_s", base.get("retroceso_s", DEFAULT_DESTRABE_RETROCESO_S)))
+    except (TypeError, ValueError):
+        retroceso_s = DEFAULT_DESTRABE_RETROCESO_S
+    try:
+        max_intentos = int(per_tolva.get("max_intentos", base.get("max_intentos", DEFAULT_DESTRABE_MAX_INTENTOS)))
+    except (TypeError, ValueError):
+        max_intentos = DEFAULT_DESTRABE_MAX_INTENTOS
+    try:
+        cooldown_s = float(per_tolva.get("cooldown_s", base.get("cooldown_s", DEFAULT_DESTRABE_COOLDOWN_S)))
+    except (TypeError, ValueError):
+        cooldown_s = DEFAULT_DESTRABE_COOLDOWN_S
+    retroceso_s = max(0.0, min(10.0, retroceso_s))
+    max_intentos = max(0, min(10, max_intentos))
+    cooldown_s = max(0.0, min(30.0, cooldown_s))
+    return {
+        "enabled": enabled,
+        "auto_on_timeout": auto_on_timeout,
+        "retroceso_s": retroceso_s,
+        "max_intentos": max_intentos,
+        "cooldown_s": cooldown_s,
+    }
+
+
+def _hacer_retroceso_en_hilo(tolva, dur_s):
+    def _run():
+        nombre = tolva.get("nombre", "Tolva")
+        print(f"[DESTRABE] Retroceso {dur_s:.2f}s en {nombre}")
+        _motor_set(tolva, "rev")
+        time.sleep(dur_s)
+        _motor_set(tolva, "off")
+        print(f"[DESTRABE] Fin retroceso en {nombre}")
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def recargar_tolvas_desde_config():
@@ -587,6 +697,8 @@ def controlar_motor():
     motor_tolva_idx = None
 
     print("[CORE] Iniciando hilo de control de motor multi-tolva con protección anti-quemado")
+    destrabe_intentos = {}  # tolva_id -> intentos durante una corrida
+    destrabe_ultimo_ts = {}  # tolva_id -> último intento
 
     while True:
         try:
@@ -621,20 +733,38 @@ def controlar_motor():
                 selected_idx = _tolva_seleccionada_idx
                 selected_tolva = tolvas_local[selected_idx]
             _, _, timeout_motor_tolva = _calibracion_tolva(selected_tolva)
+            cfg_runtime = cargar_configuracion()
+            destrabe_cfg = _get_destrabe_cfg(selected_tolva, cfg_runtime)
+
+            # --- Destrabe manual solicitado desde GUI ---
+            req = None
+            with _destrabe_request_lock:
+                if _destrabe_requested.get("ts", 0) > 0:
+                    req = dict(_destrabe_requested)
+                    _destrabe_requested.update({"tolva_id": None, "ts": 0.0})
+            if req and destrabe_cfg["enabled"] and destrabe_cfg["retroceso_s"] > 0:
+                tolva_id_req = req.get("tolva_id")
+                if tolva_id_req is None:
+                    tolva_id_req = selected_tolva["id"]
+                tolva_target = next((t for t in tolvas_local if t.get("id") == tolva_id_req), None) or selected_tolva
+                _motor_off_all(tolvas_local)
+                shared_buffer.set_motor_activo(False)
+                motor_con_timeout_activo = False
+                motor_tolva_idx = None
+                _hacer_retroceso_en_hilo(tolva_target, destrabe_cfg["retroceso_s"])
 
             # Control del motor basado en fichas_restantes
             if shared_buffer.get_fichas_restantes() > 0 and not bloqueo_emergencia:
                 if (not shared_buffer.get_motor_activo()) or (motor_tolva_idx != selected_idx):
                     # Apagar todos los motores para evitar doble activación accidental
-                    for tolva in tolvas_local:
-                        GPIO.output(tolva["motor_pin"], GPIO.LOW)
-
-                    GPIO.output(selected_tolva["motor_pin"], GPIO.HIGH)
+                    _motor_off_all(tolvas_local)
+                    _motor_set(selected_tolva, "fwd")
                     shared_buffer.set_motor_activo(True)
                     motor_tolva_idx = selected_idx
                     _ultima_tolva_motor_idx = selected_idx
                     tiempo_inicio_motor = time.time()
                     motor_con_timeout_activo = True
+                    destrabe_intentos[selected_tolva["id"]] = 0
                     with _tolvas_lock:
                         if _auto_calibration.get("running") and _auto_calibration.get("target_tolva_id") == selected_tolva["id"]:
                             _auto_calibration["motor_on_ts"] = time.time()
@@ -646,7 +776,34 @@ def controlar_motor():
                 elif motor_con_timeout_activo:
                     tiempo_motor_activo = time.time() - tiempo_inicio_motor
                     if tiempo_motor_activo > timeout_motor_tolva:
-                        GPIO.output(selected_tolva["motor_pin"], GPIO.LOW)
+                        tolva_id = selected_tolva["id"]
+                        now = time.time()
+                        prev_ts = float(destrabe_ultimo_ts.get(tolva_id, 0.0) or 0.0)
+                        intentos = int(destrabe_intentos.get(tolva_id, 0) or 0)
+                        can_try = (
+                            destrabe_cfg["enabled"]
+                            and destrabe_cfg["auto_on_timeout"]
+                            and destrabe_cfg["retroceso_s"] > 0
+                            and selected_tolva.get("motor_pin_rev")
+                            and intentos < destrabe_cfg["max_intentos"]
+                            and (now - prev_ts) >= destrabe_cfg["cooldown_s"]
+                        )
+                        if can_try:
+                            destrabe_intentos[tolva_id] = intentos + 1
+                            destrabe_ultimo_ts[tolva_id] = now
+                            print(
+                                f"[DESTRABE] Timeout {tiempo_motor_activo:.2f}s en {selected_tolva['nombre']} → "
+                                f"retroceso {destrabe_cfg['retroceso_s']:.2f}s (intento {intentos+1}/{destrabe_cfg['max_intentos']})"
+                            )
+                            _motor_off_all(tolvas_local)
+                            shared_buffer.set_motor_activo(False)
+                            motor_con_timeout_activo = False
+                            motor_tolva_idx = None
+                            _hacer_retroceso_en_hilo(selected_tolva, destrabe_cfg["retroceso_s"])
+                            time.sleep(0.05)
+                            continue
+
+                        _motor_set(selected_tolva, "off")
                         shared_buffer.set_motor_activo(False)
                         motor_con_timeout_activo = False
                         calibrating_here = False
@@ -704,8 +861,7 @@ def controlar_motor():
                                     print(f"[ERROR] GUI actualizar falló: {e}")
             else:
                 if shared_buffer.get_motor_activo():
-                    for tolva in tolvas_local:
-                        GPIO.output(tolva["motor_pin"], GPIO.LOW)
+                    _motor_off_all(tolvas_local)
                     shared_buffer.set_motor_activo(False)
                     _ultima_tolva_motor_idx = motor_tolva_idx
                     _ultimo_apagado_motor_ts = time.time()
@@ -786,7 +942,7 @@ def controlar_motor():
                                     and motor_tolva_idx == idx
                                 ):
                                     for tolva_off in tolvas_local:
-                                        GPIO.output(tolva_off["motor_pin"], GPIO.LOW)
+                                        _motor_set(tolva_off, "off")
                                     shared_buffer.set_motor_activo(False)
                                     _ultima_tolva_motor_idx = idx
                                     _ultimo_apagado_motor_ts = time.time()
@@ -851,8 +1007,7 @@ def controlar_motor():
             # El loop del motor NUNCA debe morir. Cualquier excepción se loga y se continúa.
             print(f"[MOTOR LOOP ERROR - CONTINUANDO] {type(e).__name__}: {e}")
             try:
-                for tolva in tolvas_local:
-                    GPIO.output(tolva["motor_pin"], GPIO.LOW)
+                _motor_off_all(tolvas_local)
                 shared_buffer.set_motor_activo(False)
             except Exception:
                 pass
@@ -878,7 +1033,7 @@ def detener_sistema():
     _flush_registro()  # Asegurar que no queden datos sin guardar
     with _tolvas_lock:
         for tolva in _tolvas:
-            GPIO.output(tolva["motor_pin"], GPIO.LOW)
+            _motor_set(tolva, "off")
     GPIO.cleanup()
     print("Sistema detenido")
 
@@ -920,6 +1075,9 @@ class CoreController:
 
     def unlock_motor(self):
         desbloquear_motor()
+
+    def request_unjam(self, tolva_id=None):
+        solicitar_destrabe(tolva_id=tolva_id)
 
     def start(self):
         return iniciar_sistema()

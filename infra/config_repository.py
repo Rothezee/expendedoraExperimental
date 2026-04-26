@@ -20,14 +20,22 @@ DEFAULT_MYSQL_CONFIG = {
     "database": "sistemadeadministracion",
 }
 DEFAULT_HOPPERS = [
-    {"id": 1, "nombre": "Tolva 1", "motor_pin": 24, "sensor_pin": 16},
-    {"id": 2, "nombre": "Tolva 2", "motor_pin": 25, "sensor_pin": 17},
-    {"id": 3, "nombre": "Tolva 3", "motor_pin": 23, "sensor_pin": 27},
+    {"id": 1, "nombre": "Tolva 1", "motor_pin": 24, "motor_pin_rev": None, "sensor_pin": 16},
+    {"id": 2, "nombre": "Tolva 2", "motor_pin": 25, "motor_pin_rev": None, "sensor_pin": 17},
+    {"id": 3, "nombre": "Tolva 3", "motor_pin": 23, "motor_pin_rev": None, "sensor_pin": 27},
 ]
 DEFAULT_HOPPER_CALIBRATION = {
     "pulso_min_s": 0.05,
     "pulso_max_s": 0.5,
     "timeout_motor_s": 2.0,
+}
+
+DEFAULT_DESTRABE_CONFIG = {
+    "enabled": True,
+    "auto_on_timeout": True,
+    "retroceso_s": 1.5,
+    "max_intentos": 1,
+    "cooldown_s": 2.0,
 }
 DEFAULT_PROMO_HOTKEYS = {
     "Promo 1": ["<slash>", "<KP_Divide>"],
@@ -162,6 +170,11 @@ class ConfigRepository:
                     "id": self._safe_int(hopper.get("id", idx), idx, minimum=1),
                     "nombre": str(hopper.get("nombre", fallback["nombre"])),
                     "motor_pin": self._safe_int(hopper.get("motor_pin", fallback["motor_pin"]), fallback["motor_pin"], minimum=1),
+                    "motor_pin_rev": (
+                        self._safe_int(hopper.get("motor_pin_rev"), fallback.get("motor_pin_rev") or 0, minimum=1)
+                        if hopper.get("motor_pin_rev") is not None
+                        else None
+                    ),
                     "sensor_pin": self._safe_int(hopper.get("sensor_pin", fallback["sensor_pin"]), fallback["sensor_pin"], minimum=1),
                     "calibracion": {
                         "pulso_min_s": self._safe_float(
@@ -193,6 +206,7 @@ class ConfigRepository:
                     "id": fallback["id"],
                     "nombre": fallback["nombre"],
                     "motor_pin": fallback["motor_pin"],
+                    "motor_pin_rev": fallback.get("motor_pin_rev"),
                     "sensor_pin": fallback["sensor_pin"],
                     "calibracion": dict(DEFAULT_HOPPER_CALIBRATION),
                 }
