@@ -74,6 +74,7 @@
                 "id": 1,
                 "nombre": "Tolva 1",
                 "motor_pin": 24,
+                "motor_pin_rev": null,
                 "sensor_pin": 16,
                 "calibracion": {
                     "pulso_min_s": 0.0411,
@@ -85,6 +86,7 @@
                 "id": 2,
                 "nombre": "Tolva 2",
                 "motor_pin": 25,
+                "motor_pin_rev": null,
                 "sensor_pin": 17,
                 "calibracion": {
                     "pulso_min_s": 0.05,
@@ -96,6 +98,7 @@
                 "id": 3,
                 "nombre": "Tolva 3",
                 "motor_pin": 23,
+                "motor_pin_rev": null,
                 "sensor_pin": 27,
                 "calibracion": {
                     "pulso_min_s": 0.05,
