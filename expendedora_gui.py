@@ -237,6 +237,28 @@ class ExpendedoraGUI:
         )
         self.btn_destrabar.pack(side="left", padx=6)
         self._ultimo_evento_core_ts = None
+        self._after_fast_status_id = None
+
+        def _refresh_fast_status():
+            """
+            Refresco rápido (poll) de pendientes/restantes.
+            Objetivo: UI responsiva (~50ms) sin depender de timers de 1s
+            ni de la llegada del callback del core.
+            """
+            try:
+                pendientes = int(shared_buffer.get_fichas_restantes())
+                self.status_pendientes_lbl.config(text=f"Pendientes: {pendientes}")
+
+                # Mantener el label grande de "Fichas Restantes" sincronizado.
+                self.contadores["fichas_restantes"] = pendientes
+                label = self.contadores_labels.get("fichas_restantes")
+                if label is not None:
+                    label.config(text=f"{pendientes}")
+            except Exception:
+                # No romper el loop de UI si algún widget todavía no existe.
+                pass
+            self._after_fast_status_id = self.root.after(50, _refresh_fast_status)
+
         
 
         # Menú lateral
@@ -335,6 +357,9 @@ class ExpendedoraGUI:
 
         crear_card_contador(self.info_frame, "fichas_restantes", "Fichas Restantes", self.colors["primary"], fixed_height=150)
         # crear_card_contador(self.info_frame, "fichas_expendidas", "Fichas Expendidas", self.colors["success"]) # Movido a Contadores
+
+        # Arrancar refresco rápido una vez que el label grande ya existe.
+        _refresh_fast_status()
 
         # --- Helper para Botones Redondeados ---
         def crear_boton_redondeado(parent, text, command, bg_color, fg_color, width=200, height=45, radius=20):
@@ -2483,6 +2508,11 @@ class ExpendedoraGUI:
         if hasattr(self, "_after_id"):
             try:
                 self.root.after_cancel(self._after_id)
+            except Exception:
+                pass
+        if hasattr(self, "_after_fast_status_id") and self._after_fast_status_id:
+            try:
+                self.root.after_cancel(self._after_fast_status_id)
             except Exception:
                 pass
         self.root.destroy()
