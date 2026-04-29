@@ -7,6 +7,32 @@ class AuthRepositoryMySQL:
     def __init__(self, config_repository: ConfigRepository):
         self.config_repository = config_repository
 
+    def _get_local_target(self):
+        config = self.config_repository.load()
+        mysql_cfg = config.get("mysql", {})
+        if not isinstance(mysql_cfg, dict):
+            mysql_cfg = {}
+        local_cfg = mysql_cfg.get("local", {})
+        if not isinstance(local_cfg, dict):
+            local_cfg = {}
+        return {
+            "host": local_cfg.get("host", "localhost"),
+            "port": local_cfg.get("port", 3306),
+            "user": local_cfg.get("user", "root"),
+            "password": local_cfg.get("password", ""),
+            "database": local_cfg.get("database", "sistemadeadministracion"),
+        }
+
+    def _connect_local_only(self):
+        target = self._get_local_target()
+        return mysql.connector.connect(
+            host=target.get("host", "localhost"),
+            port=target.get("port", 3306),
+            user=target.get("user", "root"),
+            password=target.get("password", ""),
+            database=target.get("database", "sistemadeadministracion"),
+        )
+
     def _get_mysql_targets(self, only_production: bool = False):
         config = self.config_repository.load()
         mysql_cfg = config.get("mysql", {})
@@ -78,7 +104,24 @@ class AuthRepositoryMySQL:
         return dni or None
 
     def check_schema(self) -> None:
-        conn = self._connect()
+        local_exc = None
+        try:
+            # En arranque preferimos LOCAL para no depender del remoto.
+            conn = self._connect_local_only()
+        except Exception as exc:
+            local_exc = exc
+            conn = None
+
+        if conn is None:
+            try:
+                conn = self._connect()
+            except Exception as exc:
+                raise RuntimeError(
+                    "No se pudo conectar a MySQL local ni remoto para validar el esquema. "
+                    f"Local error: {type(local_exc).__name__}: {local_exc}. "
+                    f"Remote/active error: {type(exc).__name__}: {exc}."
+                ) from exc
+
         cursor = conn.cursor()
         try:
             cursor.execute("SELECT 1 FROM usuarios_admin LIMIT 1")

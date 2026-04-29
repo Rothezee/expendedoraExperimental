@@ -105,6 +105,12 @@ _motor_io_lock = threading.Lock()
 _destrabe_request_lock = threading.Lock()
 _destrabe_requested = {"tolva_id": None, "ts": 0.0}
 
+# Por defecto, asumimos módulos de relé "active LOW" (común en placas de relés):
+# - OFF = HIGH
+# - ON  = LOW
+# Se puede overridear por tolva con "motor_active_low": false en config.
+DEFAULT_MOTOR_ACTIVE_LOW = True
+
 # Variable global para controlar el bloqueo por emergencia
 bloqueo_emergencia = False
 _tolvas_lock = threading.Lock()
@@ -188,6 +194,7 @@ def _cargar_tolvas_desde_config():
                     if hopper.get("motor_pin_rev") is not None and str(hopper.get("motor_pin_rev")).strip() != ""
                     else None
                 ),
+                "motor_active_low": bool(hopper.get("motor_active_low", DEFAULT_MOTOR_ACTIVE_LOW)),
                 "sensor_pin": int(hopper.get("sensor_pin", fallback["sensor_pin"])),
                 "calibracion": dict(
                     hopper.get("calibracion", fallback.get("calibracion", {}))
@@ -251,11 +258,17 @@ def _setup_gpio_tolvas():
     for tolva in _tolvas:
         GPIO.setup(tolva["sensor_pin"], GPIO.IN, pull_up_down=GPIO.PUD_UP)
         GPIO.setup(tolva["motor_pin"], GPIO.OUT)
-        GPIO.output(tolva["motor_pin"], GPIO.LOW)
+        # Dejar motores apagados al inicializar.
+        GPIO.output(tolva["motor_pin"], GPIO.HIGH if tolva.get("motor_active_low", DEFAULT_MOTOR_ACTIVE_LOW) else GPIO.LOW)
         motor_rev = tolva.get("motor_pin_rev")
         if motor_rev:
             GPIO.setup(int(motor_rev), GPIO.OUT)
-            GPIO.output(int(motor_rev), GPIO.LOW)
+            GPIO.output(int(motor_rev), GPIO.HIGH if tolva.get("motor_active_low", DEFAULT_MOTOR_ACTIVE_LOW) else GPIO.LOW)
+
+
+def _motor_levels(tolva):
+    active_low = bool(tolva.get("motor_active_low", DEFAULT_MOTOR_ACTIVE_LOW))
+    return (GPIO.LOW, GPIO.HIGH) if active_low else (GPIO.HIGH, GPIO.LOW)  # (on, off)
 
 
 def _motor_set(tolva, mode):
@@ -266,23 +279,33 @@ def _motor_set(tolva, mode):
     fwd = int(tolva["motor_pin"])
     rev = tolva.get("motor_pin_rev")
     rev = int(rev) if rev else None
+    on_level, off_level = _motor_levels(tolva)
     with _motor_io_lock:
         if mode == "off":
-            GPIO.output(fwd, GPIO.LOW)
+            GPIO.output(fwd, off_level)
             if rev:
-                GPIO.output(rev, GPIO.LOW)
+                GPIO.output(rev, off_level)
             return
         if mode == "fwd":
+            # Break-before-make: apaga ambos primero para evitar solape.
+            GPIO.output(fwd, off_level)
             if rev:
-                GPIO.output(rev, GPIO.LOW)
-            GPIO.output(fwd, GPIO.HIGH)
+                GPIO.output(rev, off_level)
+            time.sleep(0.02)
+            if rev:
+                GPIO.output(rev, off_level)
+            GPIO.output(fwd, on_level)
             return
         if mode == "rev":
             if not rev:
-                GPIO.output(fwd, GPIO.LOW)
+                GPIO.output(fwd, off_level)
                 return
-            GPIO.output(fwd, GPIO.LOW)
-            GPIO.output(rev, GPIO.HIGH)
+            # Break-before-make: apaga ambos primero para evitar solape.
+            GPIO.output(fwd, off_level)
+            GPIO.output(rev, off_level)
+            time.sleep(0.02)
+            GPIO.output(fwd, off_level)
+            GPIO.output(rev, on_level)
             return
 
 
@@ -321,15 +344,24 @@ def _get_destrabe_cfg(selected_tolva, cfg):
     }
 
 
-def _hacer_retroceso_en_hilo(tolva, dur_s):
-    def _run():
-        nombre = tolva.get("nombre", "Tolva")
-        print(f"[DESTRABE] Retroceso {dur_s:.2f}s en {nombre}")
-        _motor_set(tolva, "rev")
-        time.sleep(dur_s)
-        _motor_set(tolva, "off")
-        print(f"[DESTRABE] Fin retroceso en {nombre}")
-    threading.Thread(target=_run, daemon=True).start()
+def _hacer_retroceso_bloqueante(tolva, dur_s):
+    """
+    Retroceso bloqueante (se ejecuta en el hilo del control de motor).
+    Esto evita que el loop vuelva a prender 'adelante' y pise la reversa
+    después de pocos milisegundos.
+    """
+    nombre = tolva.get("nombre", "Tolva")
+    try:
+        dur = float(dur_s)
+    except (TypeError, ValueError):
+        dur = 0.0
+    dur = max(0.0, min(10.0, dur))
+    print(f"[DESTRABE] Retroceso {dur:.2f}s en {nombre}")
+    _motor_set(tolva, "rev")
+    if dur > 0:
+        time.sleep(dur)
+    _motor_set(tolva, "off")
+    print(f"[DESTRABE] Fin retroceso en {nombre}")
 
 
 def recargar_tolvas_desde_config():
@@ -751,7 +783,7 @@ def controlar_motor():
                 shared_buffer.set_motor_activo(False)
                 motor_con_timeout_activo = False
                 motor_tolva_idx = None
-                _hacer_retroceso_en_hilo(tolva_target, destrabe_cfg["retroceso_s"])
+                _hacer_retroceso_bloqueante(tolva_target, destrabe_cfg["retroceso_s"])
 
             # Control del motor basado en fichas_restantes
             if shared_buffer.get_fichas_restantes() > 0 and not bloqueo_emergencia:
@@ -799,8 +831,9 @@ def controlar_motor():
                             shared_buffer.set_motor_activo(False)
                             motor_con_timeout_activo = False
                             motor_tolva_idx = None
-                            _hacer_retroceso_en_hilo(selected_tolva, destrabe_cfg["retroceso_s"])
-                            time.sleep(0.05)
+                            _hacer_retroceso_bloqueante(selected_tolva, destrabe_cfg["retroceso_s"])
+                            # Al terminar el retroceso, el loop reintentará prender adelante
+                            # si aún hay fichas pendientes.
                             continue
 
                         _motor_set(selected_tolva, "off")

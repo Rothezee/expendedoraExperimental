@@ -1292,6 +1292,16 @@ class ExpendedoraGUI:
             self.status_tolva_lbl.config(text="Tolva: -", bg="#ECF0F1", fg="#2C3E50")
 
         self.status_pendientes_lbl.config(text=f"Pendientes: {pendientes}")
+
+        # Mantener el label grande de "Fichas Restantes" sincronizado aunque
+        # el callback del core se pierda por cualquier motivo.
+        try:
+            self.contadores["fichas_restantes"] = pendientes
+            label = self.contadores_labels.get("fichas_restantes")
+            if label is not None:
+                label.config(text=f"{pendientes}")
+        except Exception:
+            pass
         if self._ultimo_evento_core_ts:
             self.status_last_event_lbl.config(text=f"Últ. evento: {self._ultimo_evento_core_ts.strftime('%H:%M:%S')}")
 
