@@ -54,7 +54,17 @@ class ReportRepositoryMySQL:
 
     def _connect(self):
         last_exc = None
-        for target in self._get_mysql_targets():
+        targets = list(self._get_mysql_targets())
+        # En la expendedora (kiosk) preferimos leer desde la BD local.
+        # Si "active=production" está configurado pero el remoto falla,
+        # igual queremos que la UI de reportes funcione.
+        def _is_local(t: dict) -> bool:
+            host = str(t.get("host", "") or "").strip().lower()
+            return host in ("localhost", "127.0.0.1", "::1")
+
+        targets.sort(key=lambda t: 0 if _is_local(t) else 1)
+
+        for target in targets:
             try:
                 return mysql.connector.connect(
                     host=target.get("host", "localhost"),

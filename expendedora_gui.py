@@ -211,8 +211,19 @@ class ExpendedoraGUI:
         self.status_pendientes_lbl.pack(side="left", padx=4)
         self.status_last_event_lbl = tk.Label(self.header_status_frame, text="Últ. evento: -", bg="#ECF0F1", fg="#2C3E50", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
         self.status_last_event_lbl.pack(side="left", padx=4)
-        self.status_network_lbl = tk.Label(self.header_status_frame, text="Red: ...", bg="#D6EAF8", fg="#1B4F72", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
-        self.status_network_lbl.pack(side="left", padx=4)
+        self.status_network_lbl = tk.Label(
+            self.header_status_frame,
+            text="Red: ...",
+            bg="#D6EAF8",
+            fg="#1B4F72",
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=4,
+            anchor="w",
+        )
+        # En Raspberry con resoluciones chicas, este label se recorta fácil.
+        # Permitimos que expanda y use el espacio sobrante del header.
+        self.status_network_lbl.pack(side="left", padx=4, fill="x", expand=True)
 
         def _destrabar_tolva_seleccionada():
             try:
@@ -1455,6 +1466,15 @@ class ExpendedoraGUI:
         label_text = f"Red: {level}{conn_text}{signal_text}"
         if message and not conn_name:
             label_text = f"Red: {level} ({message})"
+
+        # En pantallas chicas (kiosk) acortar para que no se recorte:
+        # priorizamos nivel + señal, luego nombre de conexión.
+        max_len = 32
+        if len(label_text) > max_len:
+            compact = f"Red: {level}{signal_text}"
+            if message and level in ("OFFLINE", "DEGRADED", "DISABLED") and len(compact) < (max_len - 3):
+                compact = f"{compact} ({message})"
+            label_text = compact[:max_len]
 
         if level == "ONLINE":
             bg, fg = "#27AE60", "white"
