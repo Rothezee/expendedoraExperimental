@@ -47,6 +47,48 @@ class ConfigRepositoryTest(unittest.TestCase):
             self.assertIn("Promo 2", loaded["atajos"]["promociones"])
             self.assertIn("calibracion", loaded["maquina"]["hoppers"][1])
 
+    def test_normalize_mysql_null_password_no_string_none(self):
+        repo = ConfigRepository("config.json")
+        normalized = repo.normalize(
+            {
+                "mysql": {
+                    "active": "local",
+                    "fallback_to_secondary": True,
+                    "local": {
+                        "host": "localhost",
+                        "port": 3306,
+                        "user": "root",
+                        "password": None,
+                        "database": "sistemadeadministracion",
+                    },
+                    "production": {
+                        "host": "remote.example",
+                        "port": 3306,
+                        "user": "u",
+                        "password": "secret",
+                        "database": "db",
+                    },
+                },
+            }
+        )
+        self.assertEqual(normalized["mysql"]["local"]["password"], "")
+        self.assertFalse(normalized["mysql"]["local"]["password"] == "None")
+
+    def test_iter_mysql_targets_legacy_flat_from_section(self):
+        targets = ConfigRepository.iter_mysql_targets_from_section(
+            {
+                "host": "127.0.0.1",
+                "port": 3307,
+                "user": "legacy_user",
+                "password": "",
+                "database": "legacy_db",
+            }
+        )
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["host"], "127.0.0.1")
+        self.assertEqual(targets[0]["port"], 3307)
+        self.assertEqual(targets[0]["database"], "legacy_db")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
+from infra.db_exception_message import format_db_exception
+
 from .database import add_user
 
 class RegisterWindow:
@@ -63,7 +65,7 @@ class RegisterWindow:
             else:
                 self.warning_label.config(text=msg or "El usuario ya existe")
         except Exception as exc:
-            msg = str(exc).strip() or "No se pudo registrar el usuario en la base remota."
+            msg = format_db_exception(exc) or "No se pudo registrar el usuario en la base remota."
             self.warning_label.config(text=msg)
             messagebox.showerror("Registro", msg)
 

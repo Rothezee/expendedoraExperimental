@@ -10,6 +10,7 @@ from User_management import UserManagement
 from expendedora_core import CoreController
 import shared_buffer
 from infra.config_repository import ConfigRepository, DEFAULT_DNI_ADMIN
+from infra.db_exception_message import format_db_exception
 from infra.report_repository_mysql import ReportRepositoryMySQL
 from services.counter_service import CounterService
 from services.network_manager_service import NetworkManagerService
@@ -751,11 +752,48 @@ class ExpendedoraGUI:
             }
         )
         self.network_service.start(callback=self._on_network_status_changed)
+        self._startup_kiosk_mapped = False
+
+        def _on_root_mapped(_event=None):
+            if self._startup_kiosk_mapped:
+                return
+            self._startup_kiosk_mapped = True
+            self.root.after(30, lambda: self.mostrar_frame(self.main_frame))
+
+        self.root.bind('<Map>', _on_root_mapped, add='+')
+
         self.mostrar_frame(self.main_frame)
+        self.root.after(1, lambda: self.mostrar_frame(self.main_frame))
+        self.root.after(220, lambda: self.mostrar_frame(self.main_frame))
+        # Evita que el primer toque se consuma solo en tomar foco de ventana.
+        self.root.after(120, lambda: self.root.focus_force())
 
         # Reiniciar el contador de sesión al iniciar la GUI
         shared_buffer.gui_to_core_queue.put({'type': 'reset_sesion'})
         print(f"[GUI] Sesión iniciada para usuario: {username}")
+
+    def _apply_kiosk_window(self):
+        """
+        Tras destruir el Tk del login se crea una ventana nueva; en algunos entornos
+        (Linux / labwc / Xwayland) el primer -fullscreen no aplica hasta que el WM
+        mapeó la ventana. Forzamos geometry a pantalla y re-aplicamos fullscreen.
+        """
+        r = self.root
+        try:
+            r.update_idletasks()
+        except Exception:
+            pass
+        try:
+            sw = int(r.winfo_screenwidth())
+            sh = int(r.winfo_screenheight())
+            if sw > 64 and sh > 64:
+                r.geometry(f"{sw}x{sh}+0+0")
+        except Exception:
+            pass
+        try:
+            r.attributes('-fullscreen', True)
+        except Exception:
+            pass
 
     def _init_update_toast(self):
         toast = tk.Frame(self.root, bg="#1F2A36", bd=0, relief="flat")
@@ -955,12 +993,29 @@ class ExpendedoraGUI:
         for f in [self.main_frame, self.contadores_page, self.config_frame, self.reportes_frame, self.simulacion_frame]:
             f.pack_forget()
         frame.pack(fill="both", expand=True)
-        
+
+        # En Raspberry touch a veces el primer cambio de vista queda "a medio render".
+        # Forzamos layout para que el contenido aparezca completo sin doble toque.
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
         if hasattr(frame, 'canvas'):
             self.current_canvas = frame.canvas
+            try:
+                frame.canvas.update_idletasks()
+                frame.canvas.configure(scrollregion=frame.canvas.bbox("all"))
+            except Exception:
+                pass
             frame.canvas.yview_moveto(0)
         else:
             self.current_canvas = None
+
+        try:
+            self._apply_kiosk_window()
+        except Exception:
+            pass
 
     @staticmethod
     def _trigger_action(func):
@@ -2006,9 +2061,11 @@ class ExpendedoraGUI:
 
         daily_tab = tk.Frame(notebook, bg="#ffffff")
         partial_tab = tk.Frame(notebook, bg="#ffffff")
+        telemetry_tab = tk.Frame(notebook, bg="#ffffff")
         summary_tab = tk.Frame(notebook, bg="#ffffff")
         notebook.add(daily_tab, text="Cierres diarios")
         notebook.add(partial_tab, text="Cierres parciales")
+        notebook.add(telemetry_tab, text="Telemetría expendedora")
         notebook.add(summary_tab, text="Resumen reportes")
 
         daily_cols = ("id_cierre", "id_dispositivo", "fichas_totales", "dinero", "p1", "p2", "p3", "fichas_promo", "fecha_apertura", "tipo_evento")
@@ -2026,8 +2083,10 @@ class ExpendedoraGUI:
             "fichas_cambio",
             "fecha_apertura_turno",
         )
+        telemetry_cols = ("id_lectura", "id_dispositivo", "fichas", "dinero", "fecha_registro")
         daily_tree = ttk.Treeview(daily_tab, columns=daily_cols, show="headings")
         partial_tree = ttk.Treeview(partial_tab, columns=partial_cols, show="headings")
+        telemetry_tree = ttk.Treeview(telemetry_tab, columns=telemetry_cols, show="headings")
         summary_text = tk.Text(
             summary_tab,
             bg="#F8F9F9",
@@ -2043,7 +2102,7 @@ class ExpendedoraGUI:
         summary_text.insert("1.0", "Cargando resumen...")
         summary_text.config(state="disabled")
 
-        for tree, columns in ((daily_tree, daily_cols), (partial_tree, partial_cols)):
+        for tree, columns in ((daily_tree, daily_cols), (partial_tree, partial_cols), (telemetry_tree, telemetry_cols)):
             for col in columns:
                 tree.heading(col, text=col)
                 width = 120
@@ -2077,9 +2136,10 @@ class ExpendedoraGUI:
             except (TypeError, ValueError):
                 return 0
 
-        def render_summary(daily_rows, partial_rows):
+        def render_summary(daily_rows, partial_rows, telemetry_rows):
             total_daily = len(daily_rows)
             total_partial = len(partial_rows)
+            total_telemetry = len(telemetry_rows)
 
             total_dinero_daily = sum(to_float(r.get("dinero")) for r in daily_rows)
             total_fichas_daily = sum(to_int(r.get("fichas_totales")) for r in daily_rows)
@@ -2089,6 +2149,8 @@ class ExpendedoraGUI:
             total_fichas_partial = sum(to_int(r.get("fichas_totales")) for r in partial_rows)
             total_devolucion_partial = sum(to_int(r.get("fichas_devolucion")) for r in partial_rows)
             total_cambio_partial = sum(to_int(r.get("fichas_cambio")) for r in partial_rows)
+            total_fichas_telemetry = sum(to_int(r.get("fichas")) for r in telemetry_rows)
+            total_dinero_telemetry = sum(to_float(r.get("dinero")) for r in telemetry_rows)
 
             avg_daily = (total_dinero_daily / total_daily) if total_daily else 0.0
             avg_partial = (total_dinero_partial / total_partial) if total_partial else 0.0
@@ -2098,6 +2160,7 @@ class ExpendedoraGUI:
                 "",
                 f"- Registros diarios cargados: {total_daily}",
                 f"- Registros parciales cargados: {total_partial}",
+                f"- Lecturas telemetría cargadas: {total_telemetry}",
                 "",
                 "CIERRES DIARIOS",
                 f"- Dinero total: ${total_dinero_daily:.2f}",
@@ -2111,6 +2174,10 @@ class ExpendedoraGUI:
                 f"- Fichas devolución: {total_devolucion_partial}",
                 f"- Fichas cambio: {total_cambio_partial}",
                 f"- Promedio dinero por subcierre: ${avg_partial:.2f}",
+                "",
+                "TELEMETRÍA EXPENDEDORA",
+                f"- Dinero total telemetría: ${total_dinero_telemetry:.2f}",
+                f"- Fichas total telemetría: {total_fichas_telemetry}",
                 "",
                 f"Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             ]
@@ -2133,20 +2200,36 @@ class ExpendedoraGUI:
                 try:
                     daily_rows = self.report_repository.fetch_daily_closures(limit=limit, device_id=device)
                     partial_rows = self.report_repository.fetch_partial_closures(limit=limit, device_id=device)
+                    telemetry_rows = self.report_repository.fetch_expendedora_telemetry(limit=limit, device_id=device)
                     self.root.after(
                         0,
                         lambda: (
                             fill_tree(daily_tree, daily_rows, daily_cols),
                             fill_tree(partial_tree, partial_rows, partial_cols),
-                            render_summary(daily_rows, partial_rows),
+                            fill_tree(telemetry_tree, telemetry_rows, telemetry_cols),
+                            render_summary(daily_rows, partial_rows, telemetry_rows),
                             status_lbl.config(
-                                text=f"{len(daily_rows)} diarios | {len(partial_rows)} parciales",
+                                text=(
+                                    f"{len(daily_rows)} diarios | {len(partial_rows)} parciales | "
+                                    f"{len(telemetry_rows)} telemetría"
+                                ),
                                 fg="#1E8449",
                             ),
                         ),
                     )
                 except Exception as exc:
-                    self.root.after(0, lambda: status_lbl.config(text=f"Error: {exc}", fg="#C0392B"))
+                    err_text = format_db_exception(exc)
+                    hint = (
+                        " En config.json, sección \"mysql\": objetos \"local\" y \"production\" "
+                        "(host, usuario, contraseña, database)."
+                    )
+                    self.root.after(
+                        0,
+                        lambda t=err_text, h=hint: status_lbl.config(
+                            text=f"Error BD: {t}.{h}",
+                            fg="#C0392B",
+                        ),
+                    )
 
             _threading.Thread(target=worker, daemon=True).start()
 
@@ -2585,10 +2668,11 @@ class ExpendedoraGUI:
         self.simular_salida_fichas()
         
     def simular_salida_fichas(self):
-        """Simula el sensor de la tolva seleccionada (para pruebas)."""
-        from gpio_sim import GPIO
-        # Simular flanco descendente sobre el sensor actualmente activo
-        GPIO.simulate_sensor_pulse(self.core.sensor_pin)
+        """Simula una interrupción del sensor (BCM de la tolva seleccionada)."""
+        try:
+            self.core.simulate_sensor_pulse()
+        except Exception as e:
+            messagebox.showerror("Simulación", f"No se pudo simular el sensor:\n{e}")
             
     def simular_promo(self, promo):
         # Enviar comando al core via buffer compartido

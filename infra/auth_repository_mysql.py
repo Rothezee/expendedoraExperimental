@@ -7,90 +7,26 @@ class AuthRepositoryMySQL:
     def __init__(self, config_repository: ConfigRepository):
         self.config_repository = config_repository
 
-    def _get_local_target(self):
-        config = self.config_repository.load()
-        mysql_cfg = config.get("mysql", {})
-        if not isinstance(mysql_cfg, dict):
-            mysql_cfg = {}
-        local_cfg = mysql_cfg.get("local", {})
-        if not isinstance(local_cfg, dict):
-            local_cfg = {}
-        return {
-            "host": local_cfg.get("host", "localhost"),
-            "port": local_cfg.get("port", 3306),
-            "user": local_cfg.get("user", "root"),
-            "password": local_cfg.get("password", ""),
-            "database": local_cfg.get("database", "sistemadeadministracion"),
-        }
-
     def _connect_local_only(self):
-        target = self._get_local_target()
-        return mysql.connector.connect(
-            host=target.get("host", "localhost"),
-            port=target.get("port", 3306),
-            user=target.get("user", "root"),
-            password=target.get("password", ""),
-            database=target.get("database", "sistemadeadministracion"),
-        )
-
-    def _get_mysql_targets(self, only_production: bool = False):
-        config = self.config_repository.load()
-        mysql_cfg = config.get("mysql", {})
+        cfg = self.config_repository.load()
+        mysql_cfg = cfg.get("mysql", {})
         if not isinstance(mysql_cfg, dict):
             mysql_cfg = {}
-
-        active = str(mysql_cfg.get("active", "local")).lower()
-        fallback = bool(mysql_cfg.get("fallback_to_secondary", True))
-        local_cfg = mysql_cfg.get("local", {})
-        prod_cfg = mysql_cfg.get("production", {})
-        if not isinstance(local_cfg, dict):
-            local_cfg = {}
-        if not isinstance(prod_cfg, dict):
-            prod_cfg = {}
-
-        # Compatibilidad con formato viejo plano
-        if any(key in mysql_cfg for key in ("host", "port", "user", "password", "database")):
-            legacy = {
-                "host": mysql_cfg.get("host", "localhost"),
-                "port": mysql_cfg.get("port", 3306),
-                "user": mysql_cfg.get("user", "root"),
-                "password": mysql_cfg.get("password", ""),
-                "database": mysql_cfg.get("database", "sistemadeadministracion"),
-            }
-            return [legacy]
-
-        local_target = {
-            "host": local_cfg.get("host", "localhost"),
-            "port": local_cfg.get("port", 3306),
-            "user": local_cfg.get("user", "root"),
-            "password": local_cfg.get("password", ""),
-            "database": local_cfg.get("database", "sistemadeadministracion"),
-        }
-        prod_target = {
-            "host": prod_cfg.get("host", "localhost"),
-            "port": prod_cfg.get("port", 3306),
-            "user": prod_cfg.get("user", "root"),
-            "password": prod_cfg.get("password", ""),
-            "database": prod_cfg.get("database", "sistemadeadministracion"),
-        }
-
-        if only_production:
-            return [prod_target]
-        if active == "production":
-            return [prod_target, local_target] if fallback else [prod_target]
-        return [local_target, prod_target] if fallback else [local_target]
+        legacy_keys = ("host", "port", "user", "password", "database")
+        if any(k in mysql_cfg for k in legacy_keys):
+            target = self.config_repository.mysql_connection_params(mysql_cfg)
+        else:
+            local_raw = mysql_cfg.get("local", {})
+            if not isinstance(local_raw, dict):
+                local_raw = {}
+            target = self.config_repository.mysql_connection_params(local_raw)
+        return mysql.connector.connect(**target)
 
     def _connect(self, only_production: bool = False):
         last_exc = None
-        for target in self._get_mysql_targets(only_production=only_production):
+        for target in self.config_repository.iter_mysql_targets(production_only=only_production):
             try:
-                return mysql.connector.connect(
-                    host=target.get("host", "localhost"),
-                    port=target.get("port", 3306),
-                    user=target.get("user", "root"),
-                    password=target.get("password", ""),
-                    database=target.get("database", "sistemadeadministracion"),
-                )
+                return mysql.connector.connect(**target)
             except Exception as exc:
                 last_exc = exc
                 continue
@@ -100,13 +36,15 @@ class AuthRepositoryMySQL:
 
     def _get_dni_admin(self) -> str | None:
         config = self.config_repository.load()
-        dni = str(config.get("admin", {}).get("dni_admin", "")).strip()
+        admin = config.get("admin", {})
+        if not isinstance(admin, dict):
+            admin = {}
+        dni = str(admin.get("dni_admin", "")).strip()
         return dni or None
 
     def check_schema(self) -> None:
         local_exc = None
         try:
-            # En arranque preferimos LOCAL para no depender del remoto.
             conn = self._connect_local_only()
         except Exception as exc:
             local_exc = exc
@@ -210,4 +148,3 @@ class AuthRepositoryMySQL:
             return cursor.fetchone()
         finally:
             conn.close()
-

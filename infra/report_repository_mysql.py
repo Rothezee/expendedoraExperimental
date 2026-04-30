@@ -9,70 +9,11 @@ class ReportRepositoryMySQL:
     def __init__(self, config_repository: ConfigRepository):
         self.config_repository = config_repository
 
-    def _get_mysql_targets(self):
-        config = self.config_repository.load()
-        mysql_cfg = config.get("mysql", {})
-        if not isinstance(mysql_cfg, dict):
-            mysql_cfg = {}
-
-        active = str(mysql_cfg.get("active", "local")).lower()
-        fallback = bool(mysql_cfg.get("fallback_to_secondary", True))
-        local_cfg = mysql_cfg.get("local", {})
-        prod_cfg = mysql_cfg.get("production", {})
-        if not isinstance(local_cfg, dict):
-            local_cfg = {}
-        if not isinstance(prod_cfg, dict):
-            prod_cfg = {}
-
-        if any(key in mysql_cfg for key in ("host", "port", "user", "password", "database")):
-            legacy = {
-                "host": mysql_cfg.get("host", "localhost"),
-                "port": mysql_cfg.get("port", 3306),
-                "user": mysql_cfg.get("user", "root"),
-                "password": mysql_cfg.get("password", ""),
-                "database": mysql_cfg.get("database", "sistemadeadministracion"),
-            }
-            return [legacy]
-
-        local_target = {
-            "host": local_cfg.get("host", "localhost"),
-            "port": local_cfg.get("port", 3306),
-            "user": local_cfg.get("user", "root"),
-            "password": local_cfg.get("password", ""),
-            "database": local_cfg.get("database", "sistemadeadministracion"),
-        }
-        prod_target = {
-            "host": prod_cfg.get("host", "localhost"),
-            "port": prod_cfg.get("port", 3306),
-            "user": prod_cfg.get("user", "root"),
-            "password": prod_cfg.get("password", ""),
-            "database": prod_cfg.get("database", "sistemadeadministracion"),
-        }
-        if active == "production":
-            return [prod_target, local_target] if fallback else [prod_target]
-        return [local_target, prod_target] if fallback else [local_target]
-
     def _connect(self):
         last_exc = None
-        targets = list(self._get_mysql_targets())
-        # En la expendedora (kiosk) preferimos leer desde la BD local.
-        # Si "active=production" está configurado pero el remoto falla,
-        # igual queremos que la UI de reportes funcione.
-        def _is_local(t: dict) -> bool:
-            host = str(t.get("host", "") or "").strip().lower()
-            return host in ("localhost", "127.0.0.1", "::1")
-
-        targets.sort(key=lambda t: 0 if _is_local(t) else 1)
-
-        for target in targets:
+        for target in self.config_repository.iter_mysql_targets(prefer_local_first=True):
             try:
-                return mysql.connector.connect(
-                    host=target.get("host", "localhost"),
-                    port=target.get("port", 3306),
-                    user=target.get("user", "root"),
-                    password=target.get("password", ""),
-                    database=target.get("database", "sistemadeadministracion"),
-                )
+                return mysql.connector.connect(**target)
             except Exception as exc:
                 last_exc = exc
         if last_exc:
@@ -90,7 +31,18 @@ class ReportRepositoryMySQL:
     @staticmethod
     def _available_columns(cursor, table: str) -> set[str]:
         cursor.execute(f"SHOW COLUMNS FROM {table}")
-        return {str(row[0]) for row in cursor.fetchall()}
+        columns = set()
+        for row in cursor.fetchall():
+            if isinstance(row, dict):
+                # mysql.connector con dictionary=True devuelve claves como "Field".
+                field_name = row.get("Field") or row.get("COLUMN_NAME")
+                if field_name:
+                    columns.add(str(field_name))
+                continue
+            # Compatibilidad con cursores tuple/list.
+            if isinstance(row, (list, tuple)) and row:
+                columns.add(str(row[0]))
+        return columns
 
     def _select_rows(self, table: str, preferred_columns: list[str], order_column: str, limit: int, device_id: str = ""):
         conn = self._connect()
@@ -103,8 +55,14 @@ class ReportRepositoryMySQL:
             sql = f"SELECT {', '.join(selected_columns)} FROM {table}"
             params = []
             if device_id and "id_dispositivo" in available:
-                sql += " WHERE id_dispositivo = %s"
-                params.append(device_id)
+                resolved_device = self._resolve_device_id(cursor, device_id)
+                if resolved_device is None:
+                    # Si no podemos resolver el código hardware, no filtramos:
+                    # mostrar datos es preferible a "0 filas" engañoso.
+                    pass
+                else:
+                    sql += " WHERE id_dispositivo = %s"
+                    params.append(resolved_device)
             sort_column = order_column if order_column in available else selected_columns[0]
             sql += f" ORDER BY {sort_column} DESC LIMIT %s"
             params.append(self._safe_limit(limit))
@@ -113,8 +71,37 @@ class ReportRepositoryMySQL:
         finally:
             conn.close()
 
+    @staticmethod
+    def _resolve_device_id(cursor, device_id: str) -> int | None:
+        raw = str(device_id or "").strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            return int(raw)
+        # Compatibilidad con el valor por defecto de GUI: codigo_hardware (ej: EXPENDEDORA_1).
+        try:
+            cursor.execute(
+                "SELECT id_dispositivo FROM dispositivos WHERE codigo_hardware = %s LIMIT 1",
+                (raw,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            if isinstance(row, dict):
+                value = row.get("id_dispositivo")
+            elif isinstance(row, (list, tuple)) and row:
+                value = row[0]
+            else:
+                value = None
+            if value is None:
+                return None
+            return int(value)
+        except Exception:
+            return None
+
     def fetch_daily_closures(self, limit: int = 50, device_id: str = ""):
         columns = [
+            "id_cierre_diario",
             "id_cierre",
             "id_dispositivo",
             "fichas_totales",
@@ -123,16 +110,26 @@ class ReportRepositoryMySQL:
             "p2",
             "p3",
             "fichas_promo",
+            "fichas_devolucion",
+            "fichas_cambio",
             "fecha_apertura",
+            "fecha_cierre",
             "tipo_evento",
         ]
-        return self._select_rows(
+        rows = self._select_rows(
             table="cierres_diarios",
             preferred_columns=columns,
             order_column="id_cierre",
             limit=limit,
             device_id=device_id,
         )
+        for row in rows:
+            if isinstance(row, dict):
+                if "id_cierre" not in row and "id_cierre_diario" in row:
+                    row["id_cierre"] = row.get("id_cierre_diario")
+                if "tipo_evento" not in row:
+                    row["tipo_evento"] = "cierre_diario"
+        return rows
 
     def fetch_partial_closures(self, limit: int = 50, device_id: str = ""):
         columns = [
@@ -153,6 +150,22 @@ class ReportRepositoryMySQL:
             table="cierres_parciales",
             preferred_columns=columns,
             order_column="id_cierre_parcial",
+            limit=limit,
+            device_id=device_id,
+        )
+
+    def fetch_expendedora_telemetry(self, limit: int = 50, device_id: str = ""):
+        columns = [
+            "id_lectura",
+            "id_dispositivo",
+            "fichas",
+            "dinero",
+            "fecha_registro",
+        ]
+        return self._select_rows(
+            table="telemetria_expendedoras",
+            preferred_columns=columns,
+            order_column="id_lectura",
             limit=limit,
             device_id=device_id,
         )

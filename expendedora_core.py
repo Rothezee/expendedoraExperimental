@@ -1,13 +1,22 @@
-from gpio_sim import GPIO #import RPi.GPIO as GPIO  # Descomentar para usar en hardware real#
+try:
+    import RPi.GPIO as GPIO  # type: ignore[import-not-found]
+
+    GPIO.setwarnings(False)
+except ImportError:
+    from infra.gpio_pc_stub import GPIO
+
 import time
 import threading
 import json
 import os
+from collections import deque
 from datetime import datetime
 import shared_buffer
 from infra.config_repository import ConfigRepository
 from infra.telemetry_client import TelemetryClient
 
+# PERSISTENCIA EN EJECUCION: este archivo se relee/guarda durante runtime.
+# Si queres que los pines queden permanentes, modifica config.json.
 config_file = "config.json"
 registro_file = "registro.json"
 _config_repository = ConfigRepository(config_file)
@@ -19,8 +28,6 @@ _telemetry_client = TelemetryClient(_config_repository)
 _registro_pendiente = {}
 _registro_lock = threading.Lock()
 _registro_timer = None
-
-#GPIO.setwarnings(False) descomentar para usar en hardware real
 
 def _flush_registro():
     """Escribe el registro acumulado al disco (llamado por el timer)."""
@@ -61,22 +68,22 @@ DEFAULT_TOLVAS = [
     {
         "id": 1,
         "nombre": "Tolva 1",
-        "motor_pin": 24,
-        "sensor_pin": 16,
+        "motor_pin": 3,
+        "sensor_pin": 4,
         "calibracion": {"pulso_min_s": 0.05, "pulso_max_s": 0.5, "timeout_motor_s": 2.0},
     },
     {
         "id": 2,
         "nombre": "Tolva 2",
-        "motor_pin": 25,
-        "sensor_pin": 17,
+        "motor_pin": 3,
+        "sensor_pin": 4,
         "calibracion": {"pulso_min_s": 0.05, "pulso_max_s": 0.5, "timeout_motor_s": 2.0},
     },
     {
         "id": 3,
         "nombre": "Tolva 3",
-        "motor_pin": 23,
-        "sensor_pin": 27,
+        "motor_pin": 3,
+        "sensor_pin": 4,
         "calibracion": {"pulso_min_s": 0.05, "pulso_max_s": 0.5, "timeout_motor_s": 2.0},
     },
 ]
@@ -84,6 +91,7 @@ DEFAULT_TOLVAS = [
 # --- CONFIGURACIÓN DEL SENSOR ---
 PULSO_MIN = 0.05  # Duración mínima del pulso (50ms) - filtro de ruido
 PULSO_MAX = 0.5   # Duración máxima del pulso (500ms) - filtro de bloqueos
+DEFAULT_SENSOR_BOUNCETIME_MS = 8
 
 # --- CONFIGURACIÓN DE PROTECCIÓN DEL MOTOR ---
 TIMEOUT_MOTOR = 2.0  # 2 segundos máximo sin dispensar ficha (PROTECCIÓN ANTI-QUEMADO)
@@ -120,6 +128,10 @@ _tolvas_trabadas = set()
 _ultima_tolva_motor_idx = None
 _ultimo_apagado_motor_ts = 0.0
 _ventana_pulso_tardio_por_tolva = {}
+_sensor_interrupts_cfg = {"bouncetime_ms": DEFAULT_SENSOR_BOUNCETIME_MS}
+_sensor_event_lock = threading.Lock()
+_sensor_event_queue = deque()
+_sensor_pin_to_tolva = {}
 _auto_calibration = {
     "running": False,
     "finished": False,
@@ -173,9 +185,15 @@ def solicitar_destrabe(tolva_id=None):
 
 
 def _cargar_tolvas_desde_config():
-    global _tolvas, _ventana_pulso_tardio_por_tolva
+    global _tolvas, _ventana_pulso_tardio_por_tolva, _sensor_interrupts_cfg
     cfg = cargar_configuracion()
     machine = cfg.get("maquina", {})
+    interrupts_cfg = machine.get("sensor_interrupts", {}) if isinstance(machine.get("sensor_interrupts", {}), dict) else {}
+    try:
+        bouncetime_ms = int(float(interrupts_cfg.get("bouncetime_ms", DEFAULT_SENSOR_BOUNCETIME_MS)))
+    except (TypeError, ValueError):
+        bouncetime_ms = DEFAULT_SENSOR_BOUNCETIME_MS
+    _sensor_interrupts_cfg = {"bouncetime_ms": max(0, min(1000, bouncetime_ms))}
     hoppers = machine.get("hoppers", DEFAULT_TOLVAS)
     if not isinstance(hoppers, list) or not hoppers:
         hoppers = list(DEFAULT_TOLVAS)
@@ -196,6 +214,11 @@ def _cargar_tolvas_desde_config():
                 ),
                 "motor_active_low": bool(hopper.get("motor_active_low", DEFAULT_MOTOR_ACTIVE_LOW)),
                 "sensor_pin": int(hopper.get("sensor_pin", fallback["sensor_pin"])),
+                "sensor_bouncetime_ms": (
+                    int(float(hopper.get("sensor_bouncetime_ms", _sensor_interrupts_cfg["bouncetime_ms"])))
+                    if str(hopper.get("sensor_bouncetime_ms", "")).strip() != ""
+                    else _sensor_interrupts_cfg["bouncetime_ms"]
+                ),
                 "calibracion": dict(
                     hopper.get("calibracion", fallback.get("calibracion", {}))
                     if isinstance(hopper.get("calibracion", {}), dict)
@@ -264,6 +287,114 @@ def _setup_gpio_tolvas():
         if motor_rev:
             GPIO.setup(int(motor_rev), GPIO.OUT)
             GPIO.output(int(motor_rev), GPIO.HIGH if tolva.get("motor_active_low", DEFAULT_MOTOR_ACTIVE_LOW) else GPIO.LOW)
+
+
+def _sensor_bouncetime_ms(tolva):
+    try:
+        value = int(float(tolva.get("sensor_bouncetime_ms", _sensor_interrupts_cfg.get("bouncetime_ms", DEFAULT_SENSOR_BOUNCETIME_MS))))
+    except (TypeError, ValueError):
+        value = int(_sensor_interrupts_cfg.get("bouncetime_ms", DEFAULT_SENSOR_BOUNCETIME_MS))
+    return max(0, min(1000, value))
+
+
+def _clear_sensor_events():
+    with _sensor_event_lock:
+        _sensor_event_queue.clear()
+
+
+def _pop_sensor_events():
+    with _sensor_event_lock:
+        events = list(_sensor_event_queue)
+        _sensor_event_queue.clear()
+    return events
+
+
+def _sensor_edge_callback(channel):
+    tolva_id = _sensor_pin_to_tolva.get(int(channel))
+    if tolva_id is None:
+        return
+    try:
+        state = GPIO.input(channel)
+    except Exception:
+        return
+    with _sensor_event_lock:
+        _sensor_event_queue.append(
+            {
+                "tolva_id": int(tolva_id),
+                "pin": int(channel),
+                "state": state,
+                "ts": time.time(),
+            }
+        )
+
+
+def inject_sensor_pulse_events(pin=None):
+    """
+    Simula una interrupción del sensor (secuencia equivalente HIGH→LOW→HIGH)
+    encolando el mismo formato que _sensor_edge_callback.
+
+    Si varias tolvas comparten BCM (ej. todas en pin 4), el callback IRQ solo puede
+    asociar una tolva al pin; acá siempre usa la tolva SELECCIONADA en GUI, coherente
+    con expedición y prueba.
+
+    Usa la misma cola que IRQ; mismo GPIO que importa este módulo (RPi o stub PC).
+    """
+    with _tolvas_lock:
+        t = dict(_tolvas[_tolva_seleccionada_idx])
+    pin_i = int(t["sensor_pin"] if pin is None else pin)
+    tolva_id = int(t["id"])
+    t_base = time.time()
+    sequence = [(0.0, GPIO.HIGH), (0.025, GPIO.LOW), (0.085, GPIO.HIGH)]
+    with _sensor_event_lock:
+        for dt, state in sequence:
+            _sensor_event_queue.append(
+                {
+                    "tolva_id": tolva_id,
+                    "pin": pin_i,
+                    "state": state,
+                    "ts": t_base + dt,
+                }
+            )
+    print(
+        f"[SIM CORE] BCM {pin_i}: pulsos sintéticos → tolva {tolva_id} ({t.get('nombre', '')})"
+    )
+
+
+def _remove_sensor_interrupts():
+    pins = list(_sensor_pin_to_tolva.keys())
+    for pin in pins:
+        try:
+            GPIO.remove_event_detect(int(pin))
+        except Exception:
+            pass
+    _sensor_pin_to_tolva.clear()
+    _clear_sensor_events()
+
+
+def _setup_sensor_interrupts():
+    _remove_sensor_interrupts()
+    if not hasattr(GPIO, "add_event_detect"):
+        print("[CORE] GPIO backend sin interrupciones; se mantiene modo compatibilidad.")
+        return
+    with _tolvas_lock:
+        tolvas_snapshot = [dict(t) for t in _tolvas]
+    for tolva in tolvas_snapshot:
+        pin = int(tolva["sensor_pin"])
+        bouncetime_ms = _sensor_bouncetime_ms(tolva)
+        _sensor_pin_to_tolva[pin] = int(tolva["id"])
+        try:
+            GPIO.add_event_detect(
+                pin,
+                GPIO.BOTH,
+                callback=_sensor_edge_callback,
+                bouncetime=bouncetime_ms,
+            )
+        except Exception as exc:
+            print(f"[CORE] No se pudo registrar interrupción sensor pin {pin}: {exc}")
+    print(
+        "[CORE] Interrupciones sensor activas en pines: "
+        + ", ".join(str(p) for p in sorted(_sensor_pin_to_tolva.keys()))
+    )
 
 
 def _motor_levels(tolva):
@@ -367,6 +498,8 @@ def _hacer_retroceso_bloqueante(tolva, dur_s):
 def recargar_tolvas_desde_config():
     """Recarga configuración de tolvas/calibración en caliente."""
     _cargar_tolvas_desde_config()
+    _setup_gpio_tolvas()
+    _setup_sensor_interrupts()
 
 
 def iniciar_auto_calibracion_tolva(tolva_id, samples=32):
@@ -903,16 +1036,41 @@ def controlar_motor():
                     print("[MOTOR OFF] Todas las fichas expendidas")
                     threading.Thread(target=enviar_datos_venta_servidor, daemon=True).start()
 
-            # Leer sensores de todas las tolvas
-            tiempo_actual = time.time()
+            # Sincronizar estado local por si cambiaron IDs/sensores por recarga de config.
+            tolva_idx_by_id = {}
             for idx, tolva in enumerate(tolvas_local):
-                tolva_id = tolva["id"]
-                sensor_pin = tolva["sensor_pin"]
+                tolva_id = int(tolva["id"])
+                tolva_idx_by_id[tolva_id] = idx
+                if tolva_id not in estado_anterior_sensor:
+                    estado_anterior_sensor[tolva_id] = GPIO.input(tolva["sensor_pin"])
+                    ficha_en_sensor[tolva_id] = False
+                    tiempo_inicio_pulso[tolva_id] = 0.0
+            for stale_id in list(estado_anterior_sensor.keys()):
+                if stale_id not in tolva_idx_by_id:
+                    estado_anterior_sensor.pop(stale_id, None)
+                    ficha_en_sensor.pop(stale_id, None)
+                    tiempo_inicio_pulso.pop(stale_id, None)
+
+            # Procesar eventos de interrupción del sensor.
+            sensor_events = _pop_sensor_events()
+            for event in sensor_events:
+                tolva_id = int(event.get("tolva_id", 0) or 0)
+                idx = tolva_idx_by_id.get(tolva_id)
+                if idx is None:
+                    continue
+                tolva = tolvas_local[idx]
                 pulso_min_tolva, pulso_max_tolva, _ = _calibracion_tolva(tolva)
-                estado_actual_sensor = GPIO.input(sensor_pin)
+                estado_actual_sensor = event.get("state")
+                estado_prev = estado_anterior_sensor.get(tolva_id, GPIO.HIGH)
+                tiempo_actual = float(event.get("ts") or time.time())
+
+                # Ignorar duplicados sin transición real.
+                if estado_actual_sensor == estado_prev:
+                    continue
 
                 if not ficha_en_sensor[tolva_id]:
-                    if estado_anterior_sensor[tolva_id] == GPIO.HIGH and estado_actual_sensor == GPIO.LOW:
+                    # Conteo principal: flanco de bajada.
+                    if estado_prev == GPIO.HIGH and estado_actual_sensor == GPIO.LOW:
                         ficha_en_sensor[tolva_id] = True
                         tiempo_inicio_pulso[tolva_id] = tiempo_actual
                         with _tolvas_lock:
@@ -922,7 +1080,7 @@ def controlar_motor():
                                     _auto_calibration["first_pulse_delays"].append(max(0.0, tiempo_actual - float(motor_on_ts)))
                                 _auto_calibration["pulse_open_ts"] = tiempo_actual
 
-                        # Si estaba trabada, al primer pulso la consideramos destrabada
+                        # Si estaba trabada, al primer pulso la consideramos destrabada.
                         with _tolvas_lock:
                             if tolva_id in _tolvas_trabadas:
                                 _tolvas_trabadas.remove(tolva_id)
@@ -933,9 +1091,6 @@ def controlar_motor():
                                     except Exception as e:
                                         print(f"[ERROR] GUI actualizar falló: {e}")
 
-                        # Contamos ficha si proviene de la tolva activa.
-                        # Los pulsos tardíos (motor ya apagado) NO se cuentan:
-                        # se usan solo para auto-calibrar la ventana del sensor.
                         counted = False
                         calibrated_late_pulse = False
                         if motor_tolva_idx == idx and shared_buffer.get_fichas_restantes() > 0:
@@ -966,9 +1121,7 @@ def controlar_motor():
                                     f"✅ [FICHA DETECTADA - {tolva['nombre']}] "
                                     f"Restantes: {shared_buffer.get_fichas_restantes()}"
                                 )
-
-                                # Corte por evento: al detectar la ficha objetivo (restantes = 0),
-                                # apagamos motor inmediatamente sin esperar otro ciclo del loop.
+                                # Corte por evento.
                                 if (
                                     shared_buffer.get_fichas_restantes() <= 0
                                     and shared_buffer.get_motor_activo()
@@ -1002,6 +1155,7 @@ def controlar_motor():
                                         _auto_calibration["total_counted_samples"] = int(_auto_calibration.get("total_counted_samples", 0)) + 1
                                         _auto_calibration["motor_on_ts"] = time.time()
                 else:
+                    # Flanco de subida: cerrar pulso y medir duración (diagnóstico/calibración).
                     if estado_actual_sensor == GPIO.HIGH:
                         duracion_pulso = tiempo_actual - tiempo_inicio_pulso[tolva_id]
                         ficha_en_sensor[tolva_id] = False
@@ -1034,7 +1188,7 @@ def controlar_motor():
 
                 estado_anterior_sensor[tolva_id] = estado_actual_sensor
 
-            time.sleep(0.005)
+            time.sleep(0.002)
 
         except Exception as e:
             # El loop del motor NUNCA debe morir. Cualquier excepción se loga y se continúa.
@@ -1051,6 +1205,7 @@ def iniciar_sistema():
     """Inicializa el sistema de control de motor (sin GUI)"""
     _cargar_tolvas_desde_config()
     _setup_gpio_tolvas()
+    _setup_sensor_interrupts()
     hidratar_estado_compartido_desde_config()
     enviar_pulso()
 
@@ -1064,6 +1219,7 @@ def iniciar_sistema():
 def detener_sistema():
     """Apaga el motor y limpia GPIO"""
     _flush_registro()  # Asegurar que no queden datos sin guardar
+    _remove_sensor_interrupts()
     with _tolvas_lock:
         for tolva in _tolvas:
             _motor_set(tolva, "off")
@@ -1081,6 +1237,10 @@ class CoreController:
     def sensor_pin(self):
         with _tolvas_lock:
             return _tolvas[_tolva_seleccionada_idx]["sensor_pin"]
+
+    def simulate_sensor_pulse(self, pin=None):
+        """Puente desde la GUI para probar dispatch sin segundo módulo GPIO."""
+        inject_sensor_pulse_events(pin=pin)
 
     def get_tolvas_status(self):
         return get_tolvas_status()

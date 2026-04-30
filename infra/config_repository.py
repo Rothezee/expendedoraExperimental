@@ -20,9 +20,9 @@ DEFAULT_MYSQL_CONFIG = {
     "database": "sistemadeadministracion",
 }
 DEFAULT_HOPPERS = [
-    {"id": 1, "nombre": "Tolva 1", "motor_pin": 24, "motor_pin_rev": None, "sensor_pin": 16},
-    {"id": 2, "nombre": "Tolva 2", "motor_pin": 25, "motor_pin_rev": None, "sensor_pin": 17},
-    {"id": 3, "nombre": "Tolva 3", "motor_pin": 23, "motor_pin_rev": None, "sensor_pin": 27},
+    {"id": 1, "nombre": "Tolva 1", "motor_pin": 3, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
+    {"id": 2, "nombre": "Tolva 2", "motor_pin": 3, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
+    {"id": 3, "nombre": "Tolva 3", "motor_pin": 3, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
 ]
 DEFAULT_HOPPER_CALIBRATION = {
     "pulso_min_s": 0.05,
@@ -36,6 +36,9 @@ DEFAULT_DESTRABE_CONFIG = {
     "retroceso_s": 1.5,
     "max_intentos": 1,
     "cooldown_s": 2.0,
+}
+DEFAULT_SENSOR_INTERRUPTS_CONFIG = {
+    "bouncetime_ms": 8,
 }
 DEFAULT_PROMO_HOTKEYS = {
     "Promo 1": ["<slash>", "<KP_Divide>"],
@@ -93,6 +96,103 @@ class ConfigRepository:
         if minimum is not None and parsed < minimum:
             return minimum
         return parsed
+
+    @staticmethod
+    def _mysql_scalar_str(value: Any, default: str) -> str:
+        """Evita str(None) == 'None' cuando JSON trae null en user/password/host/database."""
+        if value is None:
+            return default
+        return str(value)
+
+    @staticmethod
+    def mysql_connection_params(profile: Dict[str, Any] | None) -> Dict[str, Any]:
+        """
+        Perfil normalizado (local/production) o parcial → kwargs para mysql.connector.connect.
+        """
+        if not isinstance(profile, dict):
+            profile = {}
+        d = DEFAULT_MYSQL_CONFIG
+        return {
+            "host": str(ConfigRepository._mysql_scalar_str(profile.get("host"), d["host"]) or d["host"]).strip()
+            or d["host"],
+            "port": ConfigRepository._safe_int(profile.get("port", d["port"]), d["port"], minimum=1),
+            "user": ConfigRepository._mysql_scalar_str(profile.get("user"), d["user"]),
+            "password": ConfigRepository._mysql_scalar_str(profile.get("password"), d["password"]),
+            "database": ConfigRepository._mysql_scalar_str(profile.get("database"), d["database"]),
+            "connection_timeout": 12,
+        }
+
+    @staticmethod
+    def _is_mysql_host_local(host: str) -> bool:
+        h = str(host or "").strip().lower()
+        return h in ("localhost", "127.0.0.1", "::1")
+
+    @staticmethod
+    def iter_mysql_targets_from_section(
+        mysql_cfg: Dict[str, Any] | None,
+        *,
+        prefer_local_first: bool = False,
+        production_only: bool = False,
+    ) -> list[Dict[str, Any]]:
+        """
+        Orden de intentos de conexión según active/fallback.
+        prefer_local_first: como la UI de reportes (todos los hosts locales antes que remotos).
+        production_only: sólo perfil production (registro remoto de cajero).
+        """
+        if not isinstance(mysql_cfg, dict):
+            mysql_cfg = {}
+        legacy_keys = ("host", "port", "user", "password", "database")
+        if any(k in mysql_cfg for k in legacy_keys):
+            legacy_profile = {
+                "host": mysql_cfg.get("host", DEFAULT_MYSQL_CONFIG["host"]),
+                "port": mysql_cfg.get("port", DEFAULT_MYSQL_CONFIG["port"]),
+                "user": mysql_cfg.get("user", DEFAULT_MYSQL_CONFIG["user"]),
+                "password": mysql_cfg.get("password", DEFAULT_MYSQL_CONFIG["password"]),
+                "database": mysql_cfg.get("database", DEFAULT_MYSQL_CONFIG["database"]),
+            }
+            return [ConfigRepository.mysql_connection_params(legacy_profile)]
+
+        local_raw = mysql_cfg.get("local", {})
+        prod_raw = mysql_cfg.get("production", {})
+        if not isinstance(local_raw, dict):
+            local_raw = {}
+        if not isinstance(prod_raw, dict):
+            prod_raw = {}
+        local_params = ConfigRepository.mysql_connection_params(local_raw)
+        prod_params = ConfigRepository.mysql_connection_params(prod_raw)
+
+        if production_only:
+            return [prod_params]
+
+        active = str(mysql_cfg.get("active", DEFAULT_MYSQL_MULTI_CONFIG["active"]) or "").lower()
+        if active not in ("local", "production"):
+            active = str(DEFAULT_MYSQL_MULTI_CONFIG["active"]).lower()
+        fallback = bool(mysql_cfg.get("fallback_to_secondary", DEFAULT_MYSQL_MULTI_CONFIG["fallback_to_secondary"]))
+
+        if active == "production":
+            ordered = [prod_params, local_params] if fallback else [prod_params]
+        else:
+            ordered = [local_params, prod_params] if fallback else [local_params]
+
+        if prefer_local_first:
+            ordered = sorted(ordered, key=lambda t: (0 if ConfigRepository._is_mysql_host_local(t.get("host", "")) else 1))
+        return ordered
+
+    def iter_mysql_targets(
+        self,
+        *,
+        prefer_local_first: bool = False,
+        production_only: bool = False,
+    ) -> list[Dict[str, Any]]:
+        cfg = self.load()
+        mysql_cfg = cfg.get("mysql", {})
+        if not isinstance(mysql_cfg, dict):
+            mysql_cfg = {}
+        return ConfigRepository.iter_mysql_targets_from_section(
+            mysql_cfg,
+            prefer_local_first=prefer_local_first,
+            production_only=production_only,
+        )
 
     def normalize(self, config: Dict[str, Any] | None) -> Dict[str, Any]:
         if not isinstance(config, dict):
@@ -154,6 +254,16 @@ class ConfigRepository:
         if not isinstance(maquina, dict):
             maquina = {}
         codigo_hardware = str(maquina.get("codigo_hardware", config.get("codigo_hardware", legacy_device_id)) or "").strip()
+        raw_sensor_interrupts = maquina.get("sensor_interrupts", {})
+        if not isinstance(raw_sensor_interrupts, dict):
+            raw_sensor_interrupts = {}
+        sensor_interrupts_cfg = {
+            "bouncetime_ms": self._safe_int(
+                raw_sensor_interrupts.get("bouncetime_ms", DEFAULT_SENSOR_INTERRUPTS_CONFIG["bouncetime_ms"]),
+                DEFAULT_SENSOR_INTERRUPTS_CONFIG["bouncetime_ms"],
+                minimum=0,
+            ),
+        }
         hoppers = maquina.get("hoppers", DEFAULT_HOPPERS)
         if not isinstance(hoppers, list) or not hoppers:
             hoppers = list(DEFAULT_HOPPERS)
@@ -175,7 +285,13 @@ class ConfigRepository:
                         if hopper.get("motor_pin_rev") is not None
                         else None
                     ),
+                    "motor_active_low": bool(hopper.get("motor_active_low", fallback.get("motor_active_low", True))),
                     "sensor_pin": self._safe_int(hopper.get("sensor_pin", fallback["sensor_pin"]), fallback["sensor_pin"], minimum=1),
+                    "sensor_bouncetime_ms": self._safe_int(
+                        hopper.get("sensor_bouncetime_ms", sensor_interrupts_cfg["bouncetime_ms"]),
+                        sensor_interrupts_cfg["bouncetime_ms"],
+                        minimum=0,
+                    ),
                     "calibracion": {
                         "pulso_min_s": self._safe_float(
                             raw_calib.get("pulso_min_s", DEFAULT_HOPPER_CALIBRATION["pulso_min_s"]),
@@ -207,7 +323,13 @@ class ConfigRepository:
                     "nombre": fallback["nombre"],
                     "motor_pin": fallback["motor_pin"],
                     "motor_pin_rev": fallback.get("motor_pin_rev"),
+                    "motor_active_low": bool(fallback.get("motor_active_low", True)),
                     "sensor_pin": fallback["sensor_pin"],
+                    "sensor_bouncetime_ms": self._safe_int(
+                        fallback.get("sensor_bouncetime_ms", sensor_interrupts_cfg["bouncetime_ms"]),
+                        sensor_interrupts_cfg["bouncetime_ms"],
+                        minimum=0,
+                    ),
                     "calibracion": dict(DEFAULT_HOPPER_CALIBRATION),
                 }
             )
@@ -250,14 +372,15 @@ class ConfigRepository:
         # Compatibilidad: formato viejo plano mysql.host/mysql.user/...
         if any(key in mysql for key in ("host", "port", "user", "password", "database")):
             legacy_conn = {
-                "host": str(mysql.get("host", DEFAULT_MYSQL_CONFIG["host"])),
+                "host": self._mysql_scalar_str(mysql.get("host"), DEFAULT_MYSQL_CONFIG["host"]),
                 "port": self._safe_int(mysql.get("port", DEFAULT_MYSQL_CONFIG["port"]), DEFAULT_MYSQL_CONFIG["port"], minimum=1),
-                "user": str(mysql.get("user", DEFAULT_MYSQL_CONFIG["user"])),
-                "password": str(mysql.get("password", DEFAULT_MYSQL_CONFIG["password"])),
-                "database": str(mysql.get("database", DEFAULT_MYSQL_CONFIG["database"])),
+                "user": self._mysql_scalar_str(mysql.get("user"), DEFAULT_MYSQL_CONFIG["user"]),
+                "password": self._mysql_scalar_str(mysql.get("password"), DEFAULT_MYSQL_CONFIG["password"]),
+                "database": self._mysql_scalar_str(mysql.get("database"), DEFAULT_MYSQL_CONFIG["database"]),
             }
+            active_raw = mysql.get("active", DEFAULT_MYSQL_MULTI_CONFIG["active"])
             mysql_cfg = {
-                "active": str(mysql.get("active", DEFAULT_MYSQL_MULTI_CONFIG["active"])),
+                "active": self._mysql_scalar_str(active_raw, DEFAULT_MYSQL_MULTI_CONFIG["active"]).lower(),
                 "fallback_to_secondary": bool(mysql.get("fallback_to_secondary", DEFAULT_MYSQL_MULTI_CONFIG["fallback_to_secondary"])),
                 "local": dict(legacy_conn),
                 "production": dict(legacy_conn),
@@ -269,22 +392,23 @@ class ConfigRepository:
             prod_cfg_raw = mysql.get("production", {})
             if not isinstance(prod_cfg_raw, dict):
                 prod_cfg_raw = {}
+            active_raw = mysql.get("active", DEFAULT_MYSQL_MULTI_CONFIG["active"])
             mysql_cfg = {
-                "active": str(mysql.get("active", DEFAULT_MYSQL_MULTI_CONFIG["active"])).lower(),
+                "active": self._mysql_scalar_str(active_raw, DEFAULT_MYSQL_MULTI_CONFIG["active"]).lower(),
                 "fallback_to_secondary": bool(mysql.get("fallback_to_secondary", DEFAULT_MYSQL_MULTI_CONFIG["fallback_to_secondary"])),
                 "local": {
-                    "host": str(local_cfg_raw.get("host", DEFAULT_MYSQL_MULTI_CONFIG["local"]["host"])),
+                    "host": self._mysql_scalar_str(local_cfg_raw.get("host"), DEFAULT_MYSQL_MULTI_CONFIG["local"]["host"]),
                     "port": self._safe_int(local_cfg_raw.get("port", DEFAULT_MYSQL_MULTI_CONFIG["local"]["port"]), DEFAULT_MYSQL_MULTI_CONFIG["local"]["port"], minimum=1),
-                    "user": str(local_cfg_raw.get("user", DEFAULT_MYSQL_MULTI_CONFIG["local"]["user"])),
-                    "password": str(local_cfg_raw.get("password", DEFAULT_MYSQL_MULTI_CONFIG["local"]["password"])),
-                    "database": str(local_cfg_raw.get("database", DEFAULT_MYSQL_MULTI_CONFIG["local"]["database"])),
+                    "user": self._mysql_scalar_str(local_cfg_raw.get("user"), DEFAULT_MYSQL_MULTI_CONFIG["local"]["user"]),
+                    "password": self._mysql_scalar_str(local_cfg_raw.get("password"), DEFAULT_MYSQL_MULTI_CONFIG["local"]["password"]),
+                    "database": self._mysql_scalar_str(local_cfg_raw.get("database"), DEFAULT_MYSQL_MULTI_CONFIG["local"]["database"]),
                 },
                 "production": {
-                    "host": str(prod_cfg_raw.get("host", DEFAULT_MYSQL_MULTI_CONFIG["production"]["host"])),
+                    "host": self._mysql_scalar_str(prod_cfg_raw.get("host"), DEFAULT_MYSQL_MULTI_CONFIG["production"]["host"]),
                     "port": self._safe_int(prod_cfg_raw.get("port", DEFAULT_MYSQL_MULTI_CONFIG["production"]["port"]), DEFAULT_MYSQL_MULTI_CONFIG["production"]["port"], minimum=1),
-                    "user": str(prod_cfg_raw.get("user", DEFAULT_MYSQL_MULTI_CONFIG["production"]["user"])),
-                    "password": str(prod_cfg_raw.get("password", DEFAULT_MYSQL_MULTI_CONFIG["production"]["password"])),
-                    "database": str(prod_cfg_raw.get("database", DEFAULT_MYSQL_MULTI_CONFIG["production"]["database"])),
+                    "user": self._mysql_scalar_str(prod_cfg_raw.get("user"), DEFAULT_MYSQL_MULTI_CONFIG["production"]["user"]),
+                    "password": self._mysql_scalar_str(prod_cfg_raw.get("password"), DEFAULT_MYSQL_MULTI_CONFIG["production"]["password"]),
+                    "database": self._mysql_scalar_str(prod_cfg_raw.get("database"), DEFAULT_MYSQL_MULTI_CONFIG["production"]["database"]),
                 },
             }
 
@@ -356,6 +480,7 @@ class ConfigRepository:
             "codigo_hardware": codigo_hardware,
             "tipo_maquina": 1,
             "hoppers": normalized_hoppers,
+            "sensor_interrupts": sensor_interrupts_cfg,
         }
         merged["heartbeat"] = {"intervalo_s": intervalo_s}
         merged["mysql"] = mysql_cfg
