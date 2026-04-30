@@ -44,7 +44,13 @@ class LoginWindow:
             self.warning_label.config(text="Por favor, complete todos los campos")
             return
 
-        user = get_user(nombre=usuario, contraceña=password)
+        try:
+            user = get_user(nombre=usuario, contraceña=password)
+        except Exception as exc:
+            msg = str(exc).strip() or "No se pudo conectar a la base de usuarios."
+            self.warning_label.config(text=msg)
+            messagebox.showerror("Login", msg)
+            return
 
         if user:
             cashier_id = None

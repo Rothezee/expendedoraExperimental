@@ -7,7 +7,7 @@ class UserManagement:
     def __init__(self, main_callback=None):
         self.main_callback = main_callback  # Guardar el callback
         self.user_session = None
-        create_table()  # Crear la tabla de usuarios si no existe
+        schema_ok, schema_msg = create_table()  # Validar esquema de usuarios (best-effort)
         self.root = tk.Tk()
         self.root.title("Sistema de Control de Usuarios") # El título no será visible
         self.root.attributes('-fullscreen', True) # Ocupa 100% de pantalla y oculta la barra de título
@@ -27,6 +27,17 @@ class UserManagement:
         # Botón de Register
         self.register_button = tk.Button(self.main_frame, text="Registrar", command=self.open_register, bg="#007BFF", fg="white", font=("Arial", 12, "bold"), bd=0, padx=10, pady=5)
         self.register_button.pack(pady=10)
+
+        if not schema_ok:
+            tk.Label(
+                self.main_frame,
+                text=f"BD no disponible: {schema_msg}",
+                bg="#e9ecef",
+                fg="#c0392b",
+                font=("Arial", 10, "bold"),
+                wraplength=520,
+                justify="left",
+            ).pack(pady=(8, 0))
 
     def open_login(self):
         LoginWindow(self.root, self.on_login_success)  # Pasar la función de éxito

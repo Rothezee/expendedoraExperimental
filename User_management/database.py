@@ -4,6 +4,7 @@ from datetime import datetime
 
 from infra.auth_repository_mysql import AuthRepositoryMySQL
 from infra.config_repository import ConfigRepository
+from infra.db_exception_message import format_db_exception
 
 
 _auth_repo = AuthRepositoryMySQL(ConfigRepository("config.json"))
@@ -71,7 +72,13 @@ def _sync_pending_cashiers():
 
 
 def create_table():
-    _auth_repo.check_schema()
+    try:
+        _auth_repo.check_schema()
+        return True, ""
+    except Exception as exc:
+        msg = format_db_exception(exc)
+        print(f"[AUTH] Advertencia validando esquema: {msg}")
+        return False, msg
 
 
 def add_user(nombre, contraceña):
@@ -117,4 +124,7 @@ def get_user(nombre, contraceña):
         _sync_pending_cashiers()
     except Exception:
         pass
-    return _auth_repo.authenticate_cashier(nombre, contraceña)
+    try:
+        return _auth_repo.authenticate_cashier(nombre, contraceña)
+    except Exception as exc:
+        raise RuntimeError(format_db_exception(exc)) from exc
