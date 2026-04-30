@@ -899,6 +899,7 @@ def controlar_motor():
     ficha_en_sensor = {t["id"]: False for t in tolvas_local}
     tiempo_inicio_pulso = {t["id"]: 0.0 for t in tolvas_local}
     ultima_transicion_poll_ts = {t["id"]: 0.0 for t in tolvas_local}
+    ultimo_pulso_contado_ts = {t["id"]: 0.0 for t in tolvas_local}
     tiempo_inicio_motor = 0.0
     motor_con_timeout_activo = False
     motor_tolva_idx = None
@@ -1098,8 +1099,11 @@ def controlar_motor():
                     ficha_en_sensor.pop(stale_id, None)
                     tiempo_inicio_pulso.pop(stale_id, None)
                     ultima_transicion_poll_ts.pop(stale_id, None)
+                    ultimo_pulso_contado_ts.pop(stale_id, None)
                 elif stale_id not in ultima_transicion_poll_ts:
                     ultima_transicion_poll_ts[stale_id] = 0.0
+                elif stale_id not in ultimo_pulso_contado_ts:
+                    ultimo_pulso_contado_ts[stale_id] = 0.0
 
             # Procesar eventos de interrupción del sensor.
             sensor_events = _pop_sensor_events()
@@ -1156,6 +1160,18 @@ def controlar_motor():
                 if not ficha_en_sensor[tolva_id]:
                     # Conteo principal: flanco de bajada.
                     if estado_prev == GPIO.HIGH and estado_actual_sensor == GPIO.LOW:
+                        # Filtro anti-doble-conteo: algunos sensores/ruido pueden generar
+                        # LOW->HIGH->LOW muy rápido para una sola ficha.
+                        min_separacion_s = max(
+                            0.06,
+                            float(_sensor_bouncetime_ms(tolva)) / 1000.0,
+                            float(pulso_min_tolva),
+                        )
+                        prev_count_ts = float(ultimo_pulso_contado_ts.get(tolva_id, 0.0) or 0.0)
+                        if prev_count_ts > 0 and (tiempo_actual - prev_count_ts) < min_separacion_s:
+                            estado_anterior_sensor[tolva_id] = estado_actual_sensor
+                            continue
+
                         ficha_en_sensor[tolva_id] = True
                         tiempo_inicio_pulso[tolva_id] = tiempo_actual
                         with _tolvas_lock:
@@ -1224,6 +1240,7 @@ def controlar_motor():
                                     threading.Thread(target=enviar_datos_venta_servidor, daemon=True).start()
 
                             if counted:
+                                ultimo_pulso_contado_ts[tolva_id] = tiempo_actual
                                 try:
                                     actualizar_registro("ficha", 1)
                                 except Exception as e:
