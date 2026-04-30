@@ -16,38 +16,38 @@
     "valor_ficha": 1000.0,
     "device_id": "EXPENDEDORA_1",
     "contadores": {
-        "fichas_expendidas": 0,
-        "dinero_ingresado": 0.0,
+        "fichas_expendidas": 3,
+        "dinero_ingresado": 3000.0,
         "promo1_contador": 0,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0,
         "fichas_devolucion": 0,
-        "fichas_normales": 0,
+        "fichas_normales": 3,
         "fichas_promocion": 0,
         "fichas_cambio": 0
     },
     "contadores_apertura": {
-        "fichas_expendidas": 2,
-        "dinero_ingresado": 2000.0,
+        "fichas_expendidas": 7,
+        "dinero_ingresado": 7000.0,
         "promo1_contador": 0,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0,
         "fichas_devolucion": 0,
-        "fichas_normales": 2,
+        "fichas_normales": 7,
         "fichas_promocion": 0,
         "fichas_cambio": 0
     },
     "contadores_parciales": {
-        "fichas_expendidas": 0,
-        "dinero_ingresado": 0.0,
+        "fichas_expendidas": 3,
+        "dinero_ingresado": 3000.0,
         "promo1_contador": 0,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0,
         "fichas_devolucion": 0,
-        "fichas_normales": 0,
+        "fichas_normales": 3,
         "fichas_promocion": 0,
         "fichas_cambio": 0
     },
@@ -73,9 +73,11 @@
             {
                 "id": 1,
                 "nombre": "Tolva 1",
-                "motor_pin": 24,
+                "motor_pin": 3,
                 "motor_pin_rev": null,
-                "sensor_pin": 16,
+                "motor_active_low": true,
+                "sensor_pin": 4,
+                "sensor_bouncetime_ms": 8,
                 "calibracion": {
                     "pulso_min_s": 0.0411,
                     "pulso_max_s": 0.071,
@@ -85,9 +87,11 @@
             {
                 "id": 2,
                 "nombre": "Tolva 2",
-                "motor_pin": 25,
+                "motor_pin": 3,
                 "motor_pin_rev": null,
-                "sensor_pin": 17,
+                "motor_active_low": true,
+                "sensor_pin": 4,
+                "sensor_bouncetime_ms": 8,
                 "calibracion": {
                     "pulso_min_s": 0.05,
                     "pulso_max_s": 0.5,
@@ -97,16 +101,21 @@
             {
                 "id": 3,
                 "nombre": "Tolva 3",
-                "motor_pin": 23,
+                "motor_pin": 3,
                 "motor_pin_rev": null,
-                "sensor_pin": 27,
+                "motor_active_low": true,
+                "sensor_pin": 4,
+                "sensor_bouncetime_ms": 8,
                 "calibracion": {
                     "pulso_min_s": 0.05,
                     "pulso_max_s": 0.5,
                     "timeout_motor_s": 2.0
                 }
             }
-        ]
+        ],
+        "sensor_interrupts": {
+            "bouncetime_ms": 8
+        }
     },
     "heartbeat": {
         "intervalo_s": 600
@@ -145,7 +154,7 @@
         ]
     },
     "operacion": {
-        "ultima_apertura_fecha": "2026-04-23"
+        "ultima_apertura_fecha": "2026-04-30"
     },
     "atajos": {
         "promociones": {

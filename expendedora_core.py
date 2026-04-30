@@ -131,7 +131,7 @@ _ventana_pulso_tardio_por_tolva = {}
 _sensor_interrupts_cfg = {"bouncetime_ms": DEFAULT_SENSOR_BOUNCETIME_MS}
 _sensor_event_lock = threading.Lock()
 _sensor_event_queue = deque()
-_sensor_pin_to_tolva = {}
+_sensor_pin_to_tolvas = {}
 _auto_calibration = {
     "running": False,
     "finished": False,
@@ -310,7 +310,35 @@ def _pop_sensor_events():
 
 
 def _sensor_edge_callback(channel):
-    tolva_id = _sensor_pin_to_tolva.get(int(channel))
+    pin = int(channel)
+    tolva_ids = list(_sensor_pin_to_tolvas.get(pin, []))
+    if not tolva_ids:
+        return
+
+    # Si varias tolvas comparten el mismo sensor BCM, asociamos el evento
+    # a la tolva activa/seleccionada para que el conteo real coincida con la
+    # simulación y con la operación vigente.
+    tolva_id = None
+    if len(tolva_ids) == 1:
+        tolva_id = int(tolva_ids[0])
+    else:
+        selected_tolva_id = None
+        last_motor_tolva_id = None
+        with _tolvas_lock:
+            if 0 <= _tolva_seleccionada_idx < len(_tolvas):
+                selected_tolva_id = int(_tolvas[_tolva_seleccionada_idx]["id"])
+            if _ultima_tolva_motor_idx is not None and 0 <= _ultima_tolva_motor_idx < len(_tolvas):
+                last_motor_tolva_id = int(_tolvas[_ultima_tolva_motor_idx]["id"])
+
+        if shared_buffer.get_motor_activo() and last_motor_tolva_id in tolva_ids:
+            tolva_id = last_motor_tolva_id
+        elif selected_tolva_id in tolva_ids:
+            tolva_id = selected_tolva_id
+        elif last_motor_tolva_id in tolva_ids:
+            tolva_id = last_motor_tolva_id
+        else:
+            tolva_id = int(tolva_ids[0])
+
     if tolva_id is None:
         return
     try:
@@ -361,13 +389,13 @@ def inject_sensor_pulse_events(pin=None):
 
 
 def _remove_sensor_interrupts():
-    pins = list(_sensor_pin_to_tolva.keys())
+    pins = list(_sensor_pin_to_tolvas.keys())
     for pin in pins:
         try:
             GPIO.remove_event_detect(int(pin))
         except Exception:
             pass
-    _sensor_pin_to_tolva.clear()
+    _sensor_pin_to_tolvas.clear()
     _clear_sensor_events()
 
 
@@ -381,7 +409,10 @@ def _setup_sensor_interrupts():
     for tolva in tolvas_snapshot:
         pin = int(tolva["sensor_pin"])
         bouncetime_ms = _sensor_bouncetime_ms(tolva)
-        _sensor_pin_to_tolva[pin] = int(tolva["id"])
+        bucket = _sensor_pin_to_tolvas.setdefault(pin, [])
+        tolva_id = int(tolva["id"])
+        if tolva_id not in bucket:
+            bucket.append(tolva_id)
         try:
             GPIO.add_event_detect(
                 pin,
@@ -393,8 +424,12 @@ def _setup_sensor_interrupts():
             print(f"[CORE] No se pudo registrar interrupción sensor pin {pin}: {exc}")
     print(
         "[CORE] Interrupciones sensor activas en pines: "
-        + ", ".join(str(p) for p in sorted(_sensor_pin_to_tolva.keys()))
+        + ", ".join(str(p) for p in sorted(_sensor_pin_to_tolvas.keys()))
     )
+    shared_pins = [pin for pin, ids in _sensor_pin_to_tolvas.items() if len(ids) > 1]
+    if shared_pins:
+        details = ", ".join(f"BCM {pin}: tolvas {ids}" for pin, ids in _sensor_pin_to_tolvas.items() if len(ids) > 1)
+        print(f"[CORE] Aviso: sensores compartidos detectados ({details}).")
 
 
 def _motor_levels(tolva):
