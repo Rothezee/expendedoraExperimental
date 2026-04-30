@@ -73,7 +73,7 @@
             {
                 "id": 1,
                 "nombre": "Tolva 1",
-                "motor_pin": 3,
+                "motor_pin": 2,
                 "motor_pin_rev": null,
                 "motor_active_low": true,
                 "sensor_pin": 4,
@@ -87,7 +87,7 @@
             {
                 "id": 2,
                 "nombre": "Tolva 2",
-                "motor_pin": 3,
+                "motor_pin": 2,
                 "motor_pin_rev": null,
                 "motor_active_low": true,
                 "sensor_pin": 4,
@@ -101,7 +101,7 @@
             {
                 "id": 3,
                 "nombre": "Tolva 3",
-                "motor_pin": 3,
+                "motor_pin": 2,
                 "motor_pin_rev": null,
                 "motor_active_low": true,
                 "sensor_pin": 4,

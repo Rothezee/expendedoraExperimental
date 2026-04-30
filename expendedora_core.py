@@ -68,21 +68,21 @@ DEFAULT_TOLVAS = [
     {
         "id": 1,
         "nombre": "Tolva 1",
-        "motor_pin": 3,
+        "motor_pin": 2,
         "sensor_pin": 4,
         "calibracion": {"pulso_min_s": 0.05, "pulso_max_s": 0.5, "timeout_motor_s": 2.0},
     },
     {
         "id": 2,
         "nombre": "Tolva 2",
-        "motor_pin": 3,
+        "motor_pin": 2,
         "sensor_pin": 4,
         "calibracion": {"pulso_min_s": 0.05, "pulso_max_s": 0.5, "timeout_motor_s": 2.0},
     },
     {
         "id": 3,
         "nombre": "Tolva 3",
-        "motor_pin": 3,
+        "motor_pin": 2,
         "sensor_pin": 4,
         "calibracion": {"pulso_min_s": 0.05, "pulso_max_s": 0.5, "timeout_motor_s": 2.0},
     },
@@ -126,6 +126,7 @@ _tolvas = list(DEFAULT_TOLVAS)
 _tolva_seleccionada_idx = 0
 _tolvas_trabadas = set()
 _ultima_tolva_motor_idx = None
+_tolva_motor_activa_idx = None
 _ultimo_apagado_motor_ts = 0.0
 _ventana_pulso_tardio_por_tolva = {}
 _sensor_interrupts_cfg = {"bouncetime_ms": DEFAULT_SENSOR_BOUNCETIME_MS}
@@ -323,14 +324,19 @@ def _sensor_edge_callback(channel):
         tolva_id = int(tolva_ids[0])
     else:
         selected_tolva_id = None
+        running_tolva_id = None
         last_motor_tolva_id = None
         with _tolvas_lock:
             if 0 <= _tolva_seleccionada_idx < len(_tolvas):
                 selected_tolva_id = int(_tolvas[_tolva_seleccionada_idx]["id"])
+            if _tolva_motor_activa_idx is not None and 0 <= _tolva_motor_activa_idx < len(_tolvas):
+                running_tolva_id = int(_tolvas[_tolva_motor_activa_idx]["id"])
             if _ultima_tolva_motor_idx is not None and 0 <= _ultima_tolva_motor_idx < len(_tolvas):
                 last_motor_tolva_id = int(_tolvas[_ultima_tolva_motor_idx]["id"])
 
-        if shared_buffer.get_motor_activo() and last_motor_tolva_id in tolva_ids:
+        if shared_buffer.get_motor_activo() and running_tolva_id in tolva_ids:
+            tolva_id = running_tolva_id
+        elif shared_buffer.get_motor_activo() and last_motor_tolva_id in tolva_ids:
             tolva_id = last_motor_tolva_id
         elif selected_tolva_id in tolva_ids:
             tolva_id = selected_tolva_id
@@ -884,7 +890,7 @@ def controlar_motor():
     - ⚠️ PROTECCIÓN ANTI-QUEMADO: Detiene motor si no dispensa ficha en 2 segundos
     - La GUI lee directamente las variables globales (thread-safe via funciones get)
     """
-    global bloqueo_emergencia, _ultima_tolva_motor_idx, _ultimo_apagado_motor_ts
+    global bloqueo_emergencia, _ultima_tolva_motor_idx, _tolva_motor_activa_idx, _ultimo_apagado_motor_ts
 
     with _tolvas_lock:
         tolvas_local = [dict(t) for t in _tolvas]
@@ -892,6 +898,7 @@ def controlar_motor():
     estado_anterior_sensor = {t["id"]: GPIO.input(t["sensor_pin"]) for t in tolvas_local}
     ficha_en_sensor = {t["id"]: False for t in tolvas_local}
     tiempo_inicio_pulso = {t["id"]: 0.0 for t in tolvas_local}
+    ultima_transicion_poll_ts = {t["id"]: 0.0 for t in tolvas_local}
     tiempo_inicio_motor = 0.0
     motor_con_timeout_activo = False
     motor_tolva_idx = None
@@ -951,6 +958,7 @@ def controlar_motor():
                 shared_buffer.set_motor_activo(False)
                 motor_con_timeout_activo = False
                 motor_tolva_idx = None
+                _tolva_motor_activa_idx = None
                 _hacer_retroceso_bloqueante(tolva_target, destrabe_cfg["retroceso_s"])
 
             # Control del motor basado en fichas_restantes
@@ -962,6 +970,7 @@ def controlar_motor():
                     shared_buffer.set_motor_activo(True)
                     motor_tolva_idx = selected_idx
                     _ultima_tolva_motor_idx = selected_idx
+                    _tolva_motor_activa_idx = selected_idx
                     tiempo_inicio_motor = time.time()
                     motor_con_timeout_activo = True
                     destrabe_intentos[selected_tolva["id"]] = 0
@@ -999,6 +1008,7 @@ def controlar_motor():
                             shared_buffer.set_motor_activo(False)
                             motor_con_timeout_activo = False
                             motor_tolva_idx = None
+                            _tolva_motor_activa_idx = None
                             _hacer_retroceso_bloqueante(selected_tolva, destrabe_cfg["retroceso_s"])
                             # Al terminar el retroceso, el loop reintentará prender adelante
                             # si aún hay fichas pendientes.
@@ -1007,6 +1017,7 @@ def controlar_motor():
                         _motor_set(selected_tolva, "off")
                         shared_buffer.set_motor_activo(False)
                         motor_con_timeout_activo = False
+                        _tolva_motor_activa_idx = None
                         calibrating_here = False
                         with _tolvas_lock:
                             calibrating_here = bool(
@@ -1067,6 +1078,7 @@ def controlar_motor():
                     _ultima_tolva_motor_idx = motor_tolva_idx
                     _ultimo_apagado_motor_ts = time.time()
                     motor_tolva_idx = None
+                    _tolva_motor_activa_idx = None
                     motor_con_timeout_activo = False
                     print("[MOTOR OFF] Todas las fichas expendidas")
                     threading.Thread(target=enviar_datos_venta_servidor, daemon=True).start()
@@ -1085,9 +1097,47 @@ def controlar_motor():
                     estado_anterior_sensor.pop(stale_id, None)
                     ficha_en_sensor.pop(stale_id, None)
                     tiempo_inicio_pulso.pop(stale_id, None)
+                    ultima_transicion_poll_ts.pop(stale_id, None)
+                elif stale_id not in ultima_transicion_poll_ts:
+                    ultima_transicion_poll_ts[stale_id] = 0.0
 
             # Procesar eventos de interrupción del sensor.
             sensor_events = _pop_sensor_events()
+            # Fallback robusto: si IRQ falla/intermitente en Raspberry, detectamos
+            # transiciones por lectura directa y las encolamos con debounce.
+            for idx, tolva in enumerate(tolvas_local):
+                tolva_id = int(tolva["id"])
+                try:
+                    estado_actual = GPIO.input(tolva["sensor_pin"])
+                except Exception:
+                    continue
+                estado_prev = estado_anterior_sensor.get(tolva_id, estado_actual)
+                if estado_actual == estado_prev:
+                    continue
+                # Evitar duplicados cuando también llega evento por interrupción.
+                duplicated = False
+                for ev in sensor_events:
+                    if int(ev.get("tolva_id", 0) or 0) != tolva_id:
+                        continue
+                    if ev.get("state") == estado_actual:
+                        duplicated = True
+                        break
+                if duplicated:
+                    continue
+                now_ts = time.time()
+                min_dt = max(0.001, _sensor_bouncetime_ms(tolva) / 1000.0)
+                if (now_ts - float(ultima_transicion_poll_ts.get(tolva_id, 0.0))) < min_dt:
+                    continue
+                ultima_transicion_poll_ts[tolva_id] = now_ts
+                sensor_events.append(
+                    {
+                        "tolva_id": tolva_id,
+                        "pin": int(tolva["sensor_pin"]),
+                        "state": estado_actual,
+                        "ts": now_ts,
+                        "source": "poll",
+                    }
+                )
             for event in sensor_events:
                 tolva_id = int(event.get("tolva_id", 0) or 0)
                 idx = tolva_idx_by_id.get(tolva_id)
@@ -1168,6 +1218,7 @@ def controlar_motor():
                                     _ultima_tolva_motor_idx = idx
                                     _ultimo_apagado_motor_ts = time.time()
                                     motor_tolva_idx = None
+                                    _tolva_motor_activa_idx = None
                                     motor_con_timeout_activo = False
                                     print(f"[MOTOR OFF EVENTO] Objetivo alcanzado en {tolva['nombre']}")
                                     threading.Thread(target=enviar_datos_venta_servidor, daemon=True).start()
@@ -1231,6 +1282,7 @@ def controlar_motor():
             try:
                 _motor_off_all(tolvas_local)
                 shared_buffer.set_motor_activo(False)
+                _tolva_motor_activa_idx = None
             except Exception:
                 pass
             time.sleep(0.1)

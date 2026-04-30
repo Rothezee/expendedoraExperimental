@@ -250,6 +250,10 @@ class ExpendedoraGUI:
         self.btn_destrabar.pack(side="left", padx=6)
         self._ultimo_evento_core_ts = None
         self._after_fast_status_id = None
+        self._fast_status_interval_ms = 120
+        self._last_tolvas_signature = None
+        self._active_page = "main"
+        self._frame_to_page = {}
 
         def _refresh_fast_status():
             """
@@ -269,7 +273,7 @@ class ExpendedoraGUI:
             except Exception:
                 # No romper el loop de UI si algún widget todavía no existe.
                 pass
-            self._after_fast_status_id = self.root.after(50, _refresh_fast_status)
+            self._after_fast_status_id = self.root.after(self._fast_status_interval_ms, _refresh_fast_status)
 
         
 
@@ -643,6 +647,13 @@ class ExpendedoraGUI:
 
         # Página de reportes y cierre del día
         self.reportes_frame, reportes_content = self.crear_contenedor_scrollable(root)
+        self._frame_to_page = {
+            self.main_frame: "main",
+            self.contadores_page: "contadores",
+            self.config_frame: "config",
+            self.reportes_frame: "reportes",
+            self.simulacion_frame: "simulacion",
+        }
         
         tk.Label(reportes_content, text="Cierre y Reportes", font=self.fonts["h1"], bg=self.colors["bg"], fg=self.colors["danger"]).pack(anchor="w", pady=(0, 20))
         
@@ -993,6 +1004,7 @@ class ExpendedoraGUI:
         for f in [self.main_frame, self.contadores_page, self.config_frame, self.reportes_frame, self.simulacion_frame]:
             f.pack_forget()
         frame.pack(fill="both", expand=True)
+        self._active_page = self._frame_to_page.get(frame, "other")
 
         # En Raspberry touch a veces el primer cambio de vista queda "a medio render".
         # Forzamos layout para que el contenido aparezca completo sin doble toque.
@@ -1011,6 +1023,15 @@ class ExpendedoraGUI:
             frame.canvas.yview_moveto(0)
         else:
             self.current_canvas = None
+
+        # Render bajo demanda: refrescar pesado sólo cuando la página lo usa.
+        try:
+            if self._active_page in ("main", "contadores"):
+                self.actualizar_contadores_gui()
+            if self._active_page == "main":
+                self.actualizar_tolvas_gui()
+        except Exception:
+            pass
 
         try:
             self._apply_kiosk_window()
@@ -1123,14 +1144,17 @@ class ExpendedoraGUI:
                 self.contadores["fichas_expendidas"] = nuevo_total
                 self.contadores_apertura["fichas_expendidas"] = self.inicio_apertura_fichas + fichas_expendidas_hw
                 self.contadores_parciales["fichas_expendidas"] = self.inicio_parcial_fichas + fichas_expendidas_hw
-                self.actualizar_contadores_gui()
+                if self._active_page in ("main", "contadores"):
+                    self.actualizar_contadores_gui()
                 self.guardar_configuracion()
 
             if fichas_restantes_hw != self.contadores["fichas_restantes"]:
                 self.contadores["fichas_restantes"] = fichas_restantes_hw
-                self.actualizar_contadores_gui()
+                if self._active_page in ("main", "contadores"):
+                    self.actualizar_contadores_gui()
 
-            self.actualizar_tolvas_gui()
+            if self._active_page == "main":
+                self.actualizar_tolvas_gui()
 
         try:
             self._after_sincronizar_pendiente = True
@@ -1229,6 +1253,21 @@ class ExpendedoraGUI:
                 )
             if not estados:
                 return
+
+        signature = tuple(
+            (
+                int(estado.get("id", 0)),
+                str(estado.get("nombre", "")),
+                bool(estado.get("seleccionada")),
+                bool(estado.get("trabada")),
+                bool(estado.get("calibrando")),
+                int(estado.get("calibracion_progreso", 0) or 0),
+            )
+            for estado in estados
+        )
+        if signature == self._last_tolvas_signature:
+            self.actualizar_estado_operacion_ui(estados_tolvas=estados)
+            return
 
         for estado in estados:
             tolva_id = estado["id"]
@@ -1358,6 +1397,7 @@ class ExpendedoraGUI:
             icon_canvas.itemconfig(refs["coin2_id"], fill="#F1C40F", outline="#D4AC0D")
             icon_canvas.itemconfig(refs["coin3_id"], fill="#F1C40F", outline="#D4AC0D")
 
+        self._last_tolvas_signature = signature
         self.actualizar_estado_operacion_ui(estados_tolvas=estados)
 
     def actualizar_estado_operacion_ui(self, estados_tolvas=None):
@@ -2650,9 +2690,6 @@ class ExpendedoraGUI:
             else:
                 texto = f"{int(valor)}"
             self.contadores_labels[key].config(text=texto)
-        
-        # Forzar a Tkinter a procesar las actualizaciones de los widgets inmediatamente
-        self.root.update_idletasks()
 
     def expender_fichas_gui(self):
         """Ya no es necesaria - el hardware controla todo automáticamente"""
@@ -2721,9 +2758,15 @@ class ExpendedoraGUI:
         now = datetime.now()
         current_time = now.strftime("%Y-%m-%d %H:%M:%S")
         self.footer_label.config(text=current_time)  # Actualizar el label del footer
-        self.actualizar_estado_operacion_ui()
-        # Refresco periódico defensivo para asegurar render de tarjetas de tolvas en kiosk.
-        self.actualizar_tolvas_gui()
+        if self._active_page == "main":
+            self.actualizar_estado_operacion_ui()
+        # Refresco defensivo de tolvas SOLO si no llega callback del core por unos segundos.
+        stale_tolvas = (
+            self._ultimo_evento_core_ts is None
+            or (now - self._ultimo_evento_core_ts).total_seconds() >= 3.0
+        )
+        if stale_tolvas and self._active_page == "main":
+            self.actualizar_tolvas_gui()
         # Check de updates (cada ~30s, no bloqueante)
         if (time.time() - self._update_last_check_ts) > 30:
             self._update_last_check_ts = time.time()

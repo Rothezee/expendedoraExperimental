@@ -20,9 +20,9 @@ DEFAULT_MYSQL_CONFIG = {
     "database": "sistemadeadministracion",
 }
 DEFAULT_HOPPERS = [
-    {"id": 1, "nombre": "Tolva 1", "motor_pin": 3, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
-    {"id": 2, "nombre": "Tolva 2", "motor_pin": 3, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
-    {"id": 3, "nombre": "Tolva 3", "motor_pin": 3, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
+    {"id": 1, "nombre": "Tolva 1", "motor_pin": 2, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
+    {"id": 2, "nombre": "Tolva 2", "motor_pin": 2, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
+    {"id": 3, "nombre": "Tolva 3", "motor_pin": 2, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
 ]
 DEFAULT_HOPPER_CALIBRATION = {
     "pulso_min_s": 0.05,
