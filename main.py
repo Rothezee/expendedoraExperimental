@@ -19,24 +19,30 @@ def main(user_session):
     username, cashier_id = _parse_user_session(user_session)
     core_controller = CoreController()
     logout_requested = {"value": False}
+    action = "exit"
 
     # Inicializar el sistema de control del motor
     core_controller.start()
 
-    # Iniciar la interfaz gráfica
-    root = tk.Tk()
-    app = ExpendedoraGUI(
-        root,
-        username,
-        core_controller=core_controller,
-        cashier_id=cashier_id,
-        on_logout=lambda: logout_requested.update({"value": True}),
-    )
-    root.mainloop()
-
-    # Detener el sistema al cerrar
-    core_controller.stop()
-    return "logout" if logout_requested["value"] else "exit"
+    try:
+        # Iniciar la interfaz gráfica
+        root = tk.Tk()
+        app = ExpendedoraGUI(
+            root,
+            username,
+            core_controller=core_controller,
+            cashier_id=cashier_id,
+            on_logout=lambda: logout_requested.update({"value": True}),
+        )
+        root.mainloop()
+        action = "logout" if logout_requested["value"] else "exit"
+        return action
+    finally:
+        # Detener el sistema al cerrar (best-effort para no matar el loop login->app).
+        try:
+            core_controller.stop()
+        except Exception as exc:
+            print(f"[MAIN] Aviso al detener core: {type(exc).__name__}: {exc}")
 
 
 def run_kiosk_loop():
@@ -44,11 +50,19 @@ def run_kiosk_loop():
     Orquesta login -> app principal evitando árboles Tk anidados.
     """
     while True:
-        user_management = UserManagement(main_callback=None)
-        user_session = user_management.run()
+        try:
+            user_management = UserManagement(main_callback=None)
+            user_session = user_management.run()
+        except Exception as exc:
+            print(f"[MAIN] Error en manager de usuarios: {type(exc).__name__}: {exc}")
+            continue
         if not user_session:
             break
-        action = main(user_session)
+        try:
+            action = main(user_session)
+        except Exception as exc:
+            print(f"[MAIN] Error ejecutando app principal: {type(exc).__name__}: {exc}")
+            action = "logout"
         if action != "logout":
             break
 
