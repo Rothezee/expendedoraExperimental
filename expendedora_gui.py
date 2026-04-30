@@ -2631,63 +2631,66 @@ class ExpendedoraGUI:
         self._shutdown_ui(destroy_root=True)
 
     def cerrar_sesion(self):
-        # Determinar qué contadores usar para el subcierre
-        # Si se hizo un cierre del día, usar los contadores guardados antes del cierre
-        # Si NO se hizo cierre, usar los contadores parciales actuales
-        if hasattr(self, 'cierre_realizado') and self.cierre_realizado:
-            # Ya se hizo un cierre del día, usar los contadores guardados
-            contadores_a_enviar = getattr(self, 'contadores_parciales_pre_cierre', {
-                "fichas_expendidas": 0,
-                "dinero_ingresado": 0,
-                "promo1_contador": 0,
-                "promo2_contador": 0,
-                "promo3_contador": 0,
-                "fichas_devolucion": 0,
-                "fichas_normales": 0,
-                "fichas_promocion": 0,
-                "fichas_cambio": 0
-            })
-            print("[GUI] Usando contadores pre-cierre para subcierre")
-        else:
-            # No se hizo cierre, usar contadores parciales actuales
-            contadores_a_enviar = self.contadores_parciales
-            print("[GUI] Usando contadores parciales actuales para subcierre")
-        
-        # Siempre enviar subcierre al cerrar sesión para dejar traza de turno,
-        # incluso cuando los contadores están en cero.
-        subcierre_info = self.session_service.build_partial_close(
-            self.device_id,
-            contadores_a_enviar,
-            self.username,
-            cashier_id=self.cashier_id,
-        )
-        _post_en_hilo(
-            DNS + urlSubcierreCloud,
-            subcierre_info,
-            "Cierre sesion remoto",
-            retry_without_cashier_id=True,
-        )
-        _post_en_hilo(DNSLocal + urlSubcierreLocal, subcierre_info, "Cierre sesion local")
+        try:
+            # Determinar qué contadores usar para el subcierre
+            # Si se hizo un cierre del día, usar los contadores guardados antes del cierre
+            # Si NO se hizo cierre, usar los contadores parciales actuales
+            if hasattr(self, 'cierre_realizado') and self.cierre_realizado:
+                contadores_a_enviar = getattr(self, 'contadores_parciales_pre_cierre', {
+                    "fichas_expendidas": 0,
+                    "dinero_ingresado": 0,
+                    "promo1_contador": 0,
+                    "promo2_contador": 0,
+                    "promo3_contador": 0,
+                    "fichas_devolucion": 0,
+                    "fichas_normales": 0,
+                    "fichas_promocion": 0,
+                    "fichas_cambio": 0
+                })
+                print("[GUI] Usando contadores pre-cierre para subcierre")
+            else:
+                contadores_a_enviar = self.contadores_parciales
+                print("[GUI] Usando contadores parciales actuales para subcierre")
 
-        # Reiniciar los contadores para la próxima sesión
-        self.contadores = self.counter_service.default_counters()
-        self.contadores_parciales = self.counter_service.default_counters()
-        
-        # Reiniciar contadores en el buffer compartido para asegurar coherencia
-        shared_buffer.reset_fichas_expendidas_sesion()
-        shared_buffer.set_fichas_expendidas(0)
-        
-        # Actualizar la GUI con los contadores en cero ANTES de guardar
-        self.actualizar_contadores_gui()
-        self.guardar_configuracion(inmediato=True)
-
-        messagebox.showinfo("Cerrar Sesión", "La sesión ha sido cerrada.")
-        if callable(self.on_logout):
+            # Best-effort: no bloquear logout si falla remoto/local.
             try:
-                self.on_logout()
+                subcierre_info = self.session_service.build_partial_close(
+                    self.device_id,
+                    contadores_a_enviar,
+                    self.username,
+                    cashier_id=self.cashier_id,
+                )
+                _post_en_hilo(
+                    DNS + urlSubcierreCloud,
+                    subcierre_info,
+                    "Cierre sesion remoto",
+                    retry_without_cashier_id=True,
+                )
+                _post_en_hilo(DNSLocal + urlSubcierreLocal, subcierre_info, "Cierre sesion local")
             except Exception as exc:
-                print(f"[GUI] on_logout callback error: {exc}")
-        self._shutdown_ui(destroy_root=True)
+                print(f"[GUI] Aviso: no se pudo generar/enviar subcierre en logout: {exc}")
+
+            self.contadores = self.counter_service.default_counters()
+            self.contadores_parciales = self.counter_service.default_counters()
+            try:
+                shared_buffer.reset_fichas_expendidas_sesion()
+                shared_buffer.set_fichas_expendidas(0)
+            except Exception as exc:
+                print(f"[GUI] Aviso reseteando buffer de sesión: {exc}")
+            try:
+                self.actualizar_contadores_gui()
+                self.guardar_configuracion(inmediato=True)
+            except Exception as exc:
+                print(f"[GUI] Aviso guardando estado de sesión: {exc}")
+
+            messagebox.showinfo("Cerrar Sesión", "La sesión ha sido cerrada.")
+        finally:
+            if callable(self.on_logout):
+                try:
+                    self.on_logout()
+                except Exception as exc:
+                    print(f"[GUI] on_logout callback error: {exc}")
+            self._shutdown_ui(destroy_root=True)
         
     def actualizar_contadores_gui(self):
         for key in self.contadores_labels:
