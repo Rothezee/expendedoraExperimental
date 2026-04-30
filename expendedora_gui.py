@@ -131,6 +131,8 @@ class ExpendedoraGUI:
             "internet_host": "8.8.8.8",
             "backend_url": "",
             "preferred_interface": "",
+            "wifi_ssid": "",
+            "wifi_password": "",
         }
         self._promo_binding_candidates = set()
         self._entries_operativos = []
@@ -393,18 +395,10 @@ class ExpendedoraGUI:
             
             def on_click(e):
                 if command: command()
-            
-            def on_enter(e):
-                canvas.itemconfig(rect_id, fill="#34495E") # Color hover genérico
-                
-            def on_leave(e):
-                canvas.itemconfig(rect_id, fill=bg_color)
-                
+
             canvas.tag_bind(rect_id, "<Button-1>", on_click)
             canvas.tag_bind(text_id, "<Button-1>", on_click)
-            canvas.bind("<Enter>", on_enter)
-            canvas.bind("<Leave>", on_leave)
-            
+
             return canvas
 
         # --- Sección de Acción ---
@@ -1485,6 +1479,8 @@ class ExpendedoraGUI:
                 "internet_host": "8.8.8.8",
                 "backend_url": "",
                 "preferred_interface": "",
+                "wifi_ssid": "",
+                "wifi_password": "",
             }
         if not str(self.network_manager_cfg.get("backend_url", "")).strip():
             self.network_manager_cfg["backend_url"] = self._build_backend_probe_url()
@@ -1969,8 +1965,8 @@ class ExpendedoraGUI:
 
         config_window = tk.Toplevel(self.root)
         config_window.title("Configurar gestor de red")
-        config_window.geometry("560x470")
-        config_window.minsize(560, 470)
+        config_window.geometry("560x560")
+        config_window.minsize(560, 560)
         config_window.configure(bg="#ffffff")
         config_window.transient(self.root)
         self._set_modal_grab(config_window)
@@ -1984,6 +1980,8 @@ class ExpendedoraGUI:
         internet_host_var = tk.StringVar(value=str(cfg.get("internet_host", "8.8.8.8")))
         backend_url_var = tk.StringVar(value=str(cfg.get("backend_url", self._build_backend_probe_url())))
         iface_var = tk.StringVar(value=str(cfg.get("preferred_interface", "")))
+        wifi_ssid_var = tk.StringVar(value=str(cfg.get("wifi_ssid", "")))
+        wifi_password_var = tk.StringVar(value=str(cfg.get("wifi_password", "")))
 
         content_frame = tk.Frame(config_window, bg="#ffffff")
         content_frame.pack(fill="both", expand=True, padx=16, pady=(14, 8))
@@ -2007,11 +2005,14 @@ class ExpendedoraGUI:
         form = tk.Frame(content_frame, bg="#ffffff")
         form.pack(fill="x", pady=(0, 8))
 
-        def add_row(label, variable):
+        def add_row(label, variable, show=None):
             row = tk.Frame(form, bg="#ffffff")
             row.pack(fill="x", pady=5)
             tk.Label(row, text=label, width=26, anchor="w", bg="#ffffff", font=("Segoe UI", 9)).pack(side="left")
-            tk.Entry(row, textvariable=variable, font=("Segoe UI", 9), justify="left").pack(side="left", fill="x", expand=True)
+            entry_kwargs = {"textvariable": variable, "font": ("Segoe UI", 9), "justify": "left"}
+            if show is not None:
+                entry_kwargs["show"] = show
+            tk.Entry(row, **entry_kwargs).pack(side="left", fill="x", expand=True)
 
         add_row("Intervalo de chequeo (s)", check_interval_var)
         add_row("Fallas antes de reconectar", retry_var)
@@ -2019,10 +2020,12 @@ class ExpendedoraGUI:
         add_row("Host de prueba internet", internet_host_var)
         add_row("URL backend para healthcheck", backend_url_var)
         add_row("Interfaz preferida (ej: wlan0)", iface_var)
+        add_row("Wi-Fi SSID", wifi_ssid_var)
+        add_row("Wi-Fi contraseña", wifi_password_var, show="*")
 
         tk.Label(
             content_frame,
-            text="Tip: en Raspberry Pi usar interfaz preferida 'wlan0' o 'eth0'.",
+            text="Tip: definí SSID y contraseña para aplicar conexión Wi-Fi desde este panel.",
             bg="#ffffff",
             fg="#7F8C8D",
             font=("Segoe UI", 9),
@@ -2038,6 +2041,8 @@ class ExpendedoraGUI:
                     "internet_host": internet_host_var.get().strip() or "8.8.8.8",
                     "backend_url": backend_url_var.get().strip(),
                     "preferred_interface": iface_var.get().strip(),
+                    "wifi_ssid": wifi_ssid_var.get().strip(),
+                    "wifi_password": wifi_password_var.get(),
                 }
             except ValueError:
                 messagebox.showerror("Error", "Revisá los valores numéricos del gestor de red.")
@@ -2047,8 +2052,15 @@ class ExpendedoraGUI:
             self.guardar_configuracion(inmediato=True)
             self.network_service.stop()
             self.network_service.start(callback=self._on_network_status_changed)
+            wifi_result = ""
+            if new_cfg["wifi_ssid"]:
+                ok, detail = self.network_service.connect_configured_network()
+                if ok:
+                    wifi_result = "\nConexión Wi-Fi aplicada con la red configurada."
+                else:
+                    wifi_result = f"\nNo se pudo aplicar la red Wi-Fi ahora: {detail}"
             config_window.destroy()
-            messagebox.showinfo("Gestor de red", "Configuración guardada y monitor reiniciado.")
+            messagebox.showinfo("Gestor de red", f"Configuración guardada y monitor reiniciado.{wifi_result}")
 
         btn_row = tk.Frame(config_window, bg="#ffffff")
         btn_row.pack(side="bottom", fill="x", padx=16, pady=(6, 12))

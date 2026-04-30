@@ -63,6 +63,8 @@ class NetworkManagerService:
         internet_host = str(raw.get("internet_host", "8.8.8.8") or "").strip() or "8.8.8.8"
         backend_url = str(raw.get("backend_url", "") or "").strip()
         preferred_interface = str(raw.get("preferred_interface", "") or "").strip()
+        wifi_ssid = str(raw.get("wifi_ssid", "") or "").strip()
+        wifi_password = str(raw.get("wifi_password", "") or "")
         return {
             "enabled": enabled,
             "check_interval_s": check_interval_s,
@@ -71,6 +73,8 @@ class NetworkManagerService:
             "internet_host": internet_host,
             "backend_url": backend_url,
             "preferred_interface": preferred_interface,
+            "wifi_ssid": wifi_ssid,
+            "wifi_password": wifi_password,
         }
 
     @staticmethod
@@ -261,7 +265,12 @@ class NetworkManagerService:
         try:
             subprocess.run(["nmcli", "networking", "on"], check=False, capture_output=True, text=True, timeout=4)
             subprocess.run(["nmcli", "radio", "wifi", "on"], check=False, capture_output=True, text=True, timeout=4)
-            if device:
+            ssid = str(cfg.get("wifi_ssid") or "").strip()
+            if ssid:
+                ok, error_msg = self._connect_wifi(ssid, str(cfg.get("wifi_password") or ""), device)
+                if not ok:
+                    self._set_status(last_error=error_msg)
+            elif device:
                 subprocess.run(
                     ["nmcli", "device", "connect", device],
                     check=False,
@@ -287,3 +296,50 @@ class NetworkManagerService:
         except Exception as exc:
             self._set_status(last_error=f"Reconexión fallida: {exc}")
             print(f"[NET] reconnection error: {exc}")
+
+    def connect_configured_network(self) -> tuple[bool, str]:
+        cfg = self._load_network_cfg()
+        if platform.system().lower() != "linux":
+            return False, "Conexión Wi-Fi manual disponible solo en Linux con nmcli."
+        ssid = str(cfg.get("wifi_ssid") or "").strip()
+        if not ssid:
+            return False, "No se configuró ningún SSID."
+        preferred_interface = str(cfg.get("preferred_interface") or "").strip()
+        return self._connect_wifi(ssid, str(cfg.get("wifi_password") or ""), preferred_interface)
+
+    @staticmethod
+    def _connect_wifi(ssid: str, password: str, interface: str = "") -> tuple[bool, str]:
+        cmd = ["nmcli", "device", "wifi", "connect", ssid]
+        if password:
+            cmd.extend(["password", password])
+        if interface:
+            cmd.extend(["ifname", interface])
+        try:
+            output = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if output.returncode == 0:
+                return True, "Conexión Wi-Fi iniciada."
+
+            details = (output.stderr or output.stdout or "").strip()
+            fallback_cmd = ["nmcli", "connection", "up", ssid]
+            if interface:
+                fallback_cmd.extend(["ifname", interface])
+            fallback = subprocess.run(
+                fallback_cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if fallback.returncode == 0:
+                return True, "Perfil Wi-Fi existente activado."
+            fallback_details = (fallback.stderr or fallback.stdout or "").strip()
+            message = fallback_details or details or "No se pudo conectar con nmcli."
+            return False, message
+        except Exception as exc:
+            return False, f"Error ejecutando nmcli: {exc}"

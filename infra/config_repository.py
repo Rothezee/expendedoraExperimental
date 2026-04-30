@@ -70,6 +70,8 @@ DEFAULT_NETWORK_MANAGER_CONFIG = {
     "internet_host": "8.8.8.8",
     "backend_url": "https://maquinasbonus.com/",
     "preferred_interface": "",
+    "wifi_ssid": "",
+    "wifi_password": "",
 }
 
 
@@ -462,6 +464,8 @@ class ConfigRepository:
             "internet_host": str(network_manager.get("internet_host", DEFAULT_NETWORK_MANAGER_CONFIG["internet_host"])),
             "backend_url": str(network_manager.get("backend_url", DEFAULT_NETWORK_MANAGER_CONFIG["backend_url"])),
             "preferred_interface": str(network_manager.get("preferred_interface", DEFAULT_NETWORK_MANAGER_CONFIG["preferred_interface"])),
+            "wifi_ssid": str(network_manager.get("wifi_ssid", DEFAULT_NETWORK_MANAGER_CONFIG["wifi_ssid"])),
+            "wifi_password": str(network_manager.get("wifi_password", DEFAULT_NETWORK_MANAGER_CONFIG["wifi_password"])),
         }
 
         merged = dict(config)

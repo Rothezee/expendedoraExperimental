@@ -188,6 +188,21 @@ Si encuentras problemas como el motor no se detiene, las fichas no se cuentan co
 
 ➡️ **Guía de Solución de Problemas**
 
+### Diagnóstico MySQL (red vs permisos)
+
+Para validar si el problema es de red o de permisos del usuario MySQL:
+
+```bash
+python3 diagnosticar_mysql.py --profile production --timeout 6
+```
+
+Qué verifica:
+- Resolución DNS/IP del host de `config.json`.
+- Apertura TCP al puerto MySQL.
+- Login real con `mysql-connector` usando `mysql.production`.
+
+Si ves `1045 Access denied`, significa que hay conectividad pero faltan grants para el host/IP actual (muy común con IPv6).
+
 ---
 
 ## 📁 Estructura del Repositorio
