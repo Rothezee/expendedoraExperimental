@@ -4,8 +4,9 @@ from .register import RegisterWindow
 from .database import create_table
 
 class UserManagement:
-    def __init__(self, main_callback):
+    def __init__(self, main_callback=None):
         self.main_callback = main_callback  # Guardar el callback
+        self.user_session = None
         create_table()  # Crear la tabla de usuarios si no existe
         self.root = tk.Tk()
         self.root.title("Sistema de Control de Usuarios") # El título no será visible
@@ -34,8 +35,15 @@ class UserManagement:
         RegisterWindow(self.root)
 
     def on_login_success(self, user_session):
-        self.root.destroy()  # Cerrar la ventana de gestión de usuarios
-        self.main_callback(user_session)
+        self.user_session = user_session
+        if callable(self.main_callback):
+            self.root.destroy()  # Compatibilidad con flujo callback legado
+            self.main_callback(user_session)
+            return
+        # Flujo orquestado por main.py (sin callbacks encadenados).
+        self.root.quit()
+        self.root.destroy()
 
     def run(self):
         self.root.mainloop()
+        return self.user_session

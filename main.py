@@ -18,18 +18,39 @@ def _parse_user_session(user_session):
 def main(user_session):
     username, cashier_id = _parse_user_session(user_session)
     core_controller = CoreController()
+    logout_requested = {"value": False}
 
     # Inicializar el sistema de control del motor
     core_controller.start()
 
     # Iniciar la interfaz gráfica
     root = tk.Tk()
-    app = ExpendedoraGUI(root, username, core_controller=core_controller, cashier_id=cashier_id)
+    app = ExpendedoraGUI(
+        root,
+        username,
+        core_controller=core_controller,
+        cashier_id=cashier_id,
+        on_logout=lambda: logout_requested.update({"value": True}),
+    )
     root.mainloop()
 
     # Detener el sistema al cerrar
     core_controller.stop()
+    return "logout" if logout_requested["value"] else "exit"
+
+
+def run_kiosk_loop():
+    """
+    Orquesta login -> app principal evitando árboles Tk anidados.
+    """
+    while True:
+        user_management = UserManagement(main_callback=None)
+        user_session = user_management.run()
+        if not user_session:
+            break
+        action = main(user_session)
+        if action != "logout":
+            break
 
 if __name__ == "__main__":
-    user_management = UserManagement(main_callback=main)
-    user_management.run()
+    run_kiosk_loop()

@@ -6,7 +6,6 @@ import subprocess
 import time
 from pathlib import Path
 import requests
-from User_management import UserManagement
 from expendedora_core import CoreController
 import shared_buffer
 from infra.config_repository import ConfigRepository, DEFAULT_DNI_ADMIN
@@ -72,14 +71,17 @@ def _post_en_hilo(url, datos, descripcion="", retry_without_cashier_id=False):
     _threading.Thread(target=_enviar, daemon=True).start()
 
 class ExpendedoraGUI:
-    def __init__(self, root, username, core_controller=None, cashier_id=None):
+    def __init__(self, root, username, core_controller=None, cashier_id=None, on_logout=None):
         self.root = root
         self.username = username
         self.cashier_id = cashier_id
+        self.on_logout = on_logout
+        self._is_shutting_down = False
         self.core = core_controller or CoreController()
         self.root.title("Expendedora - Control") # El título no será visible
         self.root.attributes('-fullscreen', True) # Ocupa 100% de pantalla y oculta la barra de título
         self.root.configure(bg="#F4F7F6")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
         # --- ESTILOS ---
         self.colors = {
@@ -250,6 +252,7 @@ class ExpendedoraGUI:
         self.btn_destrabar.pack(side="left", padx=6)
         self._ultimo_evento_core_ts = None
         self._after_fast_status_id = None
+        self._auto_calib_after_id = None
         self._fast_status_interval_ms = 120
         self._last_tolvas_signature = None
         self._active_page = "main"
@@ -1211,8 +1214,9 @@ class ExpendedoraGUI:
         estado = self.core.obtener_estado_auto_calibracion()
         self.actualizar_tolvas_gui()
         if estado.get("running"):
-            self.root.after(600, self._poll_auto_calibracion_ui)
+            self._auto_calib_after_id = self.root.after(600, self._poll_auto_calibracion_ui)
             return
+        self._auto_calib_after_id = None
         if estado.get("finished"):
             err = str(estado.get("error", "") or "").strip()
             result = estado.get("result", {}) if isinstance(estado.get("result"), dict) else {}
@@ -2595,8 +2599,38 @@ class ExpendedoraGUI:
         
         self.guardar_configuracion(inmediato=True)
 
+    def _cancel_after(self, attr_name):
+        after_id = getattr(self, attr_name, None)
+        if not after_id:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except Exception:
+            pass
+        setattr(self, attr_name, None)
+
+    def _shutdown_ui(self, destroy_root=True):
+        if self._is_shutting_down:
+            return
+        self._is_shutting_down = True
+        try:
+            self.network_service.stop()
+        except Exception:
+            pass
+        self._cancel_after("_after_id")
+        self._cancel_after("_after_fast_status_id")
+        self._cancel_after("_auto_calib_after_id")
+        self._after_sincronizar_pendiente = False
+        if destroy_root:
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+
+    def _on_window_close(self):
+        self._shutdown_ui(destroy_root=True)
+
     def cerrar_sesion(self):
-        self.network_service.stop()
         # Determinar qué contadores usar para el subcierre
         # Si se hizo un cierre del día, usar los contadores guardados antes del cierre
         # Si NO se hizo cierre, usar los contadores parciales actuales
@@ -2648,37 +2682,12 @@ class ExpendedoraGUI:
         self.guardar_configuracion(inmediato=True)
 
         messagebox.showinfo("Cerrar Sesión", "La sesión ha sido cerrada.")
-        if hasattr(self, "_after_id"):
+        if callable(self.on_logout):
             try:
-                self.root.after_cancel(self._after_id)
-            except Exception:
-                pass
-        if hasattr(self, "_after_fast_status_id") and self._after_fast_status_id:
-            try:
-                self.root.after_cancel(self._after_fast_status_id)
-            except Exception:
-                pass
-        self.root.destroy()
-
-        # Crear nueva instancia de UserManagement y pasar el callback
-        def iniciar_expendedora(user_session):
-            username = "admin"
-            cashier_id = None
-            if isinstance(user_session, dict):
-                username = str(user_session.get("username", "")).strip() or "admin"
-                raw_cashier = user_session.get("cashier_id")
-                try:
-                    cashier_id = int(raw_cashier) if raw_cashier is not None else None
-                except (TypeError, ValueError):
-                    cashier_id = None
-            else:
-                username = str(user_session)
-            nuevo_root = tk.Tk()
-            app = ExpendedoraGUI(nuevo_root, username, cashier_id=cashier_id)
-            nuevo_root.mainloop()
-
-        user_management = UserManagement(iniciar_expendedora)
-        user_management.run()
+                self.on_logout()
+            except Exception as exc:
+                print(f"[GUI] on_logout callback error: {exc}")
+        self._shutdown_ui(destroy_root=True)
         
     def actualizar_contadores_gui(self):
         for key in self.contadores_labels:

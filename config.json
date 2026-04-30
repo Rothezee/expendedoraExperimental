@@ -16,14 +16,14 @@
     "valor_ficha": 1000.0,
     "device_id": "EXPENDEDORA_1",
     "contadores": {
-        "fichas_expendidas": 3,
-        "dinero_ingresado": 3000.0,
+        "fichas_expendidas": 0,
+        "dinero_ingresado": 0.0,
         "promo1_contador": 0,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0,
         "fichas_devolucion": 0,
-        "fichas_normales": 3,
+        "fichas_normales": 0,
         "fichas_promocion": 0,
         "fichas_cambio": 0
     },
@@ -40,14 +40,14 @@
         "fichas_cambio": 0
     },
     "contadores_parciales": {
-        "fichas_expendidas": 3,
-        "dinero_ingresado": 3000.0,
+        "fichas_expendidas": 0,
+        "dinero_ingresado": 0.0,
         "promo1_contador": 0,
         "promo2_contador": 0,
         "promo3_contador": 0,
         "fichas_restantes": 0,
         "fichas_devolucion": 0,
-        "fichas_normales": 3,
+        "fichas_normales": 0,
         "fichas_promocion": 0,
         "fichas_cambio": 0
     },

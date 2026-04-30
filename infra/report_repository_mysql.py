@@ -9,16 +9,14 @@ class ReportRepositoryMySQL:
     def __init__(self, config_repository: ConfigRepository):
         self.config_repository = config_repository
 
-    def _connect(self):
-        last_exc = None
-        for target in self.config_repository.iter_mysql_targets(prefer_local_first=True):
-            try:
-                return mysql.connector.connect(**target)
-            except Exception as exc:
-                last_exc = exc
-        if last_exc:
-            raise last_exc
-        raise RuntimeError("No MySQL targets configured")
+    def _targets_for_reports(self):
+        return list(self.config_repository.iter_mysql_targets(prefer_local_first=True))
+
+    @staticmethod
+    def _target_label(target: dict) -> str:
+        host = str(target.get("host", "") or "").strip()
+        db = str(target.get("database", "") or "").strip()
+        return f"{host or '-'}:{target.get('port', '-')}/{db or '-'}"
 
     @staticmethod
     def _safe_limit(limit: int) -> int:
@@ -45,31 +43,58 @@ class ReportRepositoryMySQL:
         return columns
 
     def _select_rows(self, table: str, preferred_columns: list[str], order_column: str, limit: int, device_id: str = ""):
-        conn = self._connect()
-        cursor = conn.cursor(dictionary=True)
-        try:
-            available = self._available_columns(cursor, table)
-            selected_columns = [col for col in preferred_columns if col in available]
-            if not selected_columns:
-                raise RuntimeError(f"No hay columnas esperadas en {table}.")
-            sql = f"SELECT {', '.join(selected_columns)} FROM {table}"
-            params = []
-            if device_id and "id_dispositivo" in available:
-                resolved_device = self._resolve_device_id(cursor, device_id)
-                if resolved_device is None:
-                    # Si no podemos resolver el código hardware, no filtramos:
-                    # mostrar datos es preferible a "0 filas" engañoso.
-                    pass
-                else:
-                    sql += " WHERE id_dispositivo = %s"
-                    params.append(resolved_device)
-            sort_column = order_column if order_column in available else selected_columns[0]
-            sql += f" ORDER BY {sort_column} DESC LIMIT %s"
-            params.append(self._safe_limit(limit))
-            cursor.execute(sql, tuple(params))
-            return cursor.fetchall()
-        finally:
-            conn.close()
+        last_exc = None
+        empty_result = []
+        for target in self._targets_for_reports():
+            conn = None
+            target_label = self._target_label(target)
+            try:
+                conn = mysql.connector.connect(**target)
+                cursor = conn.cursor(dictionary=True)
+                available = self._available_columns(cursor, table)
+                selected_columns = [col for col in preferred_columns if col in available]
+                if not selected_columns:
+                    # Esta BD no tiene aún el esquema esperado; probar siguiente target.
+                    print(f"[REPORTES] {table}: sin columnas esperadas en {target_label}, probando siguiente target.")
+                    continue
+                sql = f"SELECT {', '.join(selected_columns)} FROM {table}"
+                params = []
+                if device_id and "id_dispositivo" in available:
+                    resolved_device = self._resolve_device_id(cursor, device_id)
+                    if resolved_device is None and str(device_id).strip() and (not str(device_id).strip().isdigit()):
+                        # Si se pidió por codigo_hardware y este target no lo conoce,
+                        # probamos el siguiente target en vez de devolver filas ambiguas.
+                        print(
+                            f"[REPORTES] {table}: device '{device_id}' no resuelto en {target_label}, "
+                            "probando siguiente target."
+                        )
+                        continue
+                    if resolved_device is not None:
+                        sql += " WHERE id_dispositivo = %s"
+                        params.append(resolved_device)
+                sort_column = order_column if order_column in available else selected_columns[0]
+                sql += f" ORDER BY {sort_column} DESC LIMIT %s"
+                params.append(self._safe_limit(limit))
+                cursor.execute(sql, tuple(params))
+                rows = cursor.fetchall()
+                if rows:
+                    print(f"[REPORTES] {table}: {len(rows)} filas desde {target_label}.")
+                    return rows
+                # Si no hay filas en local, seguimos a remoto por si allá sí hay.
+                print(f"[REPORTES] {table}: 0 filas en {target_label}, probando siguiente target.")
+                empty_result = rows
+            except Exception as exc:
+                print(f"[REPORTES] {table}: error en {target_label}: {type(exc).__name__}: {exc}")
+                last_exc = exc
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+        if last_exc:
+            raise last_exc
+        return empty_result
 
     @staticmethod
     def _resolve_device_id(cursor, device_id: str) -> int | None:
