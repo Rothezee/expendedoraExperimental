@@ -76,6 +76,12 @@ class AuthRepositoryMySQL:
         row = cursor.fetchone()
         return row[0] if row else None
 
+    @staticmethod
+    def _admin_id_fallback(cursor) -> int | None:
+        cursor.execute("SELECT id_admin FROM usuarios_admin ORDER BY id_admin ASC LIMIT 1")
+        row = cursor.fetchone()
+        return row[0] if row else None
+
     def create_cashier(self, username: str, pin: str, require_remote: bool = False) -> bool:
         try:
             conn = self._connect(only_production=require_remote)
@@ -88,12 +94,15 @@ class AuthRepositoryMySQL:
             raise
         cursor = conn.cursor()
         try:
-            admin_id = self._admin_id_by_dni(cursor, self._get_dni_admin())
+            dni_admin = self._get_dni_admin()
+            admin_id = self._admin_id_by_dni(cursor, dni_admin)
+            if not admin_id:
+                admin_id = self._admin_id_fallback(cursor)
             if not admin_id:
                 if require_remote:
                     raise RuntimeError(
-                        "No se encontró el administrador remoto para el DNI configurado. "
-                        "No se puede registrar el cajero sin sincronizar el panel."
+                        "No hay administradores en la base remota. "
+                        "No se puede registrar cajeros hasta sincronizar el panel."
                     )
                 return False
             cursor.execute(

@@ -33,6 +33,10 @@ class NetworkManagerService:
         self._stop_event = threading.Event()
         self._last_level = "UNKNOWN"
 
+    @staticmethod
+    def _platform_id() -> str:
+        return platform.system().lower()
+
     def start(self, callback: Callable[[dict], None] | None = None):
         if self._thread and self._thread.is_alive():
             return
@@ -106,8 +110,9 @@ class NetworkManagerService:
                 self._stop_event.wait(cfg["check_interval_s"])
                 continue
 
-            supported = platform.system().lower() == "linux"
-            snapshot = self._collect_snapshot(cfg, supported=supported)
+            platform_id = self._platform_id()
+            supported = platform_id in ("linux", "windows")
+            snapshot = self._collect_snapshot(cfg, platform_id=platform_id, supported=supported)
             internet_ok = bool(snapshot.get("internet_ok"))
             backend_ok = bool(snapshot.get("backend_ok"))
             active_connection = str(snapshot.get("active_connection") or "")
@@ -139,7 +144,7 @@ class NetworkManagerService:
 
             should_reconnect = supported and consecutive_failures >= cfg["reconnect_after_failures"]
             if should_reconnect:
-                self._attempt_reconnect(cfg, snapshot)
+                self._attempt_reconnect(cfg, snapshot, platform_id=platform_id)
                 consecutive_failures = 0
 
             self._stop_event.wait(cfg["check_interval_s"])
@@ -161,7 +166,7 @@ class NetworkManagerService:
             except Exception as exc:
                 print(f"[NET] callback error: {exc}")
 
-    def _collect_snapshot(self, cfg: dict, supported: bool) -> dict:
+    def _collect_snapshot(self, cfg: dict, platform_id: str, supported: bool) -> dict:
         snapshot = {
             "active_connection": "",
             "active_device": "",
@@ -174,12 +179,20 @@ class NetworkManagerService:
             snapshot["last_error"] = "NetworkManager no soportado en este sistema."
             return snapshot
 
-        active = self._nmcli_active_connection(preferred_interface=cfg.get("preferred_interface", ""))
+        if platform_id == "linux":
+            active = self._nmcli_active_connection(preferred_interface=cfg.get("preferred_interface", ""))
+        elif platform_id == "windows":
+            active = self._windows_active_connection(preferred_interface=cfg.get("preferred_interface", ""))
+        else:
+            active = {}
         snapshot.update(active)
         snapshot["internet_ok"] = self._check_internet(cfg["internet_host"])
         snapshot["backend_ok"] = self._check_backend(cfg["backend_url"], cfg["backend_timeout_s"])
         if not snapshot["active_connection"]:
-            snapshot["last_error"] = "No hay conexión activa en NetworkManager."
+            if platform_id == "linux":
+                snapshot["last_error"] = "No hay conexión activa en NetworkManager."
+            elif platform_id == "windows":
+                snapshot["last_error"] = "No hay conexión Wi-Fi activa en Windows."
         return snapshot
 
     def _nmcli_active_connection(self, preferred_interface: str = "") -> dict:
@@ -241,6 +254,163 @@ class NetworkManagerService:
         return None
 
     @staticmethod
+    def _windows_active_connection(preferred_interface: str = "") -> dict:
+        result = {
+            "active_connection": "",
+            "active_device": "",
+            "signal_percent": None,
+        }
+        try:
+            output = subprocess.run(
+                ["netsh", "wlan", "show", "interfaces"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=6,
+            )
+            text = output.stdout or ""
+            blocks = []
+            if text.strip():
+                blocks = [
+                    block.strip()
+                    for block in text.replace("\r\n", "\n").split("\n\n")
+                    if block.strip()
+                ]
+            selected = None
+            for block in blocks:
+                parsed = NetworkManagerService._parse_windows_wlan_block(block)
+                if not parsed.get("active_connection"):
+                    continue
+                if preferred_interface and parsed.get("active_device") != preferred_interface:
+                    continue
+                selected = parsed
+                break
+            if selected is None:
+                for block in blocks:
+                    parsed = NetworkManagerService._parse_windows_wlan_block(block)
+                    if parsed.get("active_connection"):
+                        selected = parsed
+                        break
+            if selected:
+                result.update(selected)
+            if not result.get("active_connection"):
+                # Fallback: detectar interfaz cableada conectada.
+                wired = NetworkManagerService._windows_active_wired_connection(
+                    preferred_interface=preferred_interface
+                )
+                result.update(wired)
+        except Exception as exc:
+            print(f"[NET] netsh active error: {exc}")
+        return result
+
+    @staticmethod
+    def _windows_active_wired_connection(preferred_interface: str = "") -> dict:
+        result = {
+            "active_connection": "",
+            "active_device": "",
+            "signal_percent": None,
+        }
+        try:
+            output = subprocess.run(
+                ["netsh", "interface", "show", "interface"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=6,
+            )
+            connected_names = NetworkManagerService._parse_windows_connected_interfaces(output.stdout or "")
+            if not connected_names:
+                return result
+            # Si hay interfaz preferida y está conectada, usarla.
+            if preferred_interface:
+                for name in connected_names:
+                    if name.lower() == preferred_interface.lower():
+                        result["active_connection"] = name
+                        result["active_device"] = name
+                        return result
+            # Si no, elegir primera cableada conocida.
+            wired_keywords = ("ethernet", "lan", "local area")
+            for name in connected_names:
+                if any(word in name.lower() for word in wired_keywords):
+                    result["active_connection"] = name
+                    result["active_device"] = name
+                    return result
+            # Fallback: primera interfaz conectada.
+            result["active_connection"] = connected_names[0]
+            result["active_device"] = connected_names[0]
+        except Exception as exc:
+            print(f"[NET] netsh wired error: {exc}")
+        return result
+
+    @staticmethod
+    def _parse_windows_connected_interfaces(text: str) -> list[str]:
+        names: list[str] = []
+        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+        for line in lines:
+            # Saltar encabezados de tabla.
+            line_lower = line.lower()
+            if "admin state" in line_lower and "interface name" in line_lower:
+                continue
+            if line.startswith("-"):
+                continue
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            state = parts[1].lower()
+            if state not in ("connected", "conectado"):
+                continue
+            # El nombre de interfaz puede tener espacios.
+            name = " ".join(parts[3:]).strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    @staticmethod
+    def _parse_windows_wlan_block(block_text: str) -> dict:
+        parsed = {
+            "active_connection": "",
+            "active_device": "",
+            "signal_percent": None,
+        }
+        state_text = ""
+        for raw_line in block_text.splitlines():
+            line = raw_line.strip()
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key_norm = key.strip().lower()
+            val = value.strip()
+            if key_norm in ("name", "nombre", "ssid"):
+                # Evitar BSSID/Nombre de red no conectada accidental.
+                if key_norm == "ssid" and not val:
+                    continue
+                if key_norm in ("name", "nombre") and parsed["active_device"]:
+                    # En salidas mixtas preferimos no pisar interfaz ya detectada.
+                    continue
+                if key_norm in ("ssid",):
+                    parsed["active_connection"] = val
+                else:
+                    parsed["active_device"] = val
+            elif key_norm in ("description", "descripci\u00f3n"):
+                if not parsed["active_device"]:
+                    parsed["active_device"] = val
+            elif key_norm in ("state", "estado"):
+                state_text = val.lower()
+            elif key_norm in ("signal", "se\u00f1al"):
+                digits = "".join(ch for ch in val if ch.isdigit())
+                if digits:
+                    try:
+                        parsed["signal_percent"] = int(digits)
+                    except ValueError:
+                        parsed["signal_percent"] = None
+        disconnected_words = ("disconnected", "desconectado", "not connected")
+        is_disconnected = any(word in state_text for word in disconnected_words)
+        is_connected = (("connected" in state_text) or ("conectado" in state_text)) and not is_disconnected
+        if not is_connected:
+            parsed["active_connection"] = ""
+        return parsed
+
+    @staticmethod
     def _check_internet(host: str) -> bool:
         try:
             socket.create_connection((host, 53), timeout=2).close()
@@ -258,7 +428,64 @@ class NetworkManagerService:
         except Exception:
             return False
 
-    def _attempt_reconnect(self, cfg: dict, snapshot: dict):
+    def list_wifi_networks(self) -> list[str]:
+        platform_id = self._platform_id()
+        if platform_id == "linux":
+            return self._list_wifi_networks_linux()
+        if platform_id == "windows":
+            return self._list_wifi_networks_windows()
+        return []
+
+    @staticmethod
+    def _list_wifi_networks_linux() -> list[str]:
+        try:
+            output = subprocess.run(
+                ["nmcli", "-t", "-f", "SSID", "device", "wifi", "list"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=6,
+            )
+            ssids = []
+            for line in output.stdout.splitlines():
+                ssid = line.strip()
+                if ssid and ssid not in ssids:
+                    ssids.append(ssid)
+            return ssids
+        except Exception:
+            return []
+
+    @staticmethod
+    def _list_wifi_networks_windows() -> list[str]:
+        try:
+            output = subprocess.run(
+                ["netsh", "wlan", "show", "networks", "mode=Bssid"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            ssids: list[str] = []
+            for raw_line in (output.stdout or "").splitlines():
+                line = raw_line.strip()
+                if ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                key_norm = key.strip().lower()
+                if key_norm.startswith("ssid") or key_norm.startswith("nombre de ssid"):
+                    ssid = value.strip()
+                    if ssid and ssid not in ssids:
+                        ssids.append(ssid)
+            return ssids
+        except Exception:
+            return []
+
+    def _attempt_reconnect(self, cfg: dict, snapshot: dict, platform_id: str):
+        if platform_id == "windows":
+            self._attempt_reconnect_windows(cfg, snapshot)
+            return
+        if platform_id != "linux":
+            return
         preferred_interface = cfg.get("preferred_interface", "")
         active_device = str(snapshot.get("active_device") or "")
         device = preferred_interface or active_device
@@ -297,14 +524,66 @@ class NetworkManagerService:
             self._set_status(last_error=f"Reconexión fallida: {exc}")
             print(f"[NET] reconnection error: {exc}")
 
+    def _attempt_reconnect_windows(self, cfg: dict, snapshot: dict):
+        preferred_interface = str(cfg.get("preferred_interface") or "").strip()
+        active_device = str(snapshot.get("active_device") or "").strip()
+        interface = preferred_interface or active_device
+        ssid = str(cfg.get("wifi_ssid") or "").strip() or str(snapshot.get("active_connection") or "").strip()
+        if not ssid:
+            self._set_status(last_error="No hay SSID configurado para reconexión en Windows.")
+            return
+        cmd = ["netsh", "wlan", "connect", f"name={ssid}"]
+        if interface:
+            cmd.append(f"interface={interface}")
+        try:
+            output = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            if output.returncode != 0:
+                details = (output.stderr or output.stdout or "").strip()
+                self._set_status(last_error=details or "No se pudo iniciar reconexión Wi-Fi en Windows.")
+            status = self.get_status()
+            attempts = int(status.get("reconnect_attempts", 0)) + 1
+            self._set_status(
+                reconnect_attempts=attempts,
+                last_reconnect_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            print(f"[NET] Intento de reconexión #{attempts}")
+        except Exception as exc:
+            self._set_status(last_error=f"Reconexión Windows fallida: {exc}")
+            print(f"[NET] windows reconnection error: {exc}")
+
     def connect_configured_network(self) -> tuple[bool, str]:
         cfg = self._load_network_cfg()
-        if platform.system().lower() != "linux":
-            return False, "Conexión Wi-Fi manual disponible solo en Linux con nmcli."
+        platform_id = self._platform_id()
+        if platform_id not in ("linux", "windows"):
+            return False, "Conexión Wi-Fi manual no soportada en este sistema."
         ssid = str(cfg.get("wifi_ssid") or "").strip()
         if not ssid:
             return False, "No se configuró ningún SSID."
         preferred_interface = str(cfg.get("preferred_interface") or "").strip()
+        if platform_id == "windows":
+            cmd = ["netsh", "wlan", "connect", f"name={ssid}"]
+            if preferred_interface:
+                cmd.append(f"interface={preferred_interface}")
+            try:
+                output = subprocess.run(
+                    cmd,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if output.returncode == 0:
+                    return True, "Conexión Wi-Fi iniciada."
+                details = (output.stderr or output.stdout or "").strip()
+                return False, details or "No se pudo conectar con netsh."
+            except Exception as exc:
+                return False, f"Error ejecutando netsh: {exc}"
         return self._connect_wifi(ssid, str(cfg.get("wifi_password") or ""), preferred_interface)
 
     @staticmethod

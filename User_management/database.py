@@ -52,7 +52,7 @@ def _sync_pending_cashiers():
         return
 
     remaining = []
-    for item in pending:
+    for idx, item in enumerate(pending):
         username = str(item.get("username", "")).strip()
         pin = str(item.get("pin", "")).strip()
         if not username or not pin:

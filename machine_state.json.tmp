@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "revision": 494,
+  "updated_at": "2026-05-25 16:56:37",
+  "reason": "flush_pending",
+  "buffer": {
+    "fichas_restantes": 0,
+    "fichas_expendidas": 0,
+    "fichas_expendidas_sesion": 0,
+    "cuenta": 0,
+    "r_cuenta": 0
+  },
+  "contadores": {
+    "fichas_expendidas": 214,
+    "dinero_ingresado": 90000.0,
+    "promo1_contador": 0,
+    "promo2_contador": 0,
+    "promo3_contador": 0,
+    "fichas_restantes": 11,
+    "fichas_devolucion": 0,
+    "fichas_normales": 90,
+    "fichas_promocion": 0,
+    "fichas_cambio": 0
+  },
+  "contadores_apertura": {
+    "fichas_expendidas": -5,
+    "dinero_ingresado": 12000.0,
+    "promo1_contador": 0,
+    "promo2_contador": 0,
+    "promo3_contador": 0,
+    "fichas_restantes": 0,
+    "fichas_devolucion": 0,
+    "fichas_normales": 12,
+    "fichas_promocion": 0,
+    "fichas_cambio": 0
+  },
+  "contadores_parciales": {
+    "fichas_expendidas": -5,
+    "dinero_ingresado": 12000.0,
+    "promo1_contador": 0,
+    "promo2_contador": 0,
+    "promo3_contador": 0,
+    "fichas_restantes": 0,
+    "fichas_devolucion": 0,
+    "fichas_normales": 12,
+    "fichas_promocion": 0,
+    "fichas_cambio": 0
+  }
+}

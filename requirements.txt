@@ -1,0 +1,6 @@
+# PC Windows — expendedora + ESP32 USB
+# Python 3.10+
+
+requests
+mysql-connector-python
+pyserial

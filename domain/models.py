@@ -15,6 +15,12 @@ COUNTER_KEYS = (
     "fichas_cambio",
 )
 
+COUNTER_DOMAIN_GLOBAL = "contadores_global"
+COUNTER_DOMAIN_PARTIAL = "contadores_parcial"
+LEGACY_COUNTER_DOMAIN_GLOBAL = "contadores"
+LEGACY_COUNTER_DOMAIN_DAILY = "contadores_apertura"
+LEGACY_COUNTER_DOMAIN_PARTIAL = "contadores_parciales"
+
 
 @dataclass
 class Counters:

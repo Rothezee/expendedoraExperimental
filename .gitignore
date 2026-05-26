@@ -5,3 +5,4 @@ __pycache__/
 buffer_state.json
 updater/last_update_state.json
 updater/updater.lock
+firmware/**/.pio/

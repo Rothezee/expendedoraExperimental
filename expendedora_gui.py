@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import subprocess
 import time
+import json
 from pathlib import Path
 import requests
 from expendedora_core import CoreController
@@ -17,7 +18,6 @@ from services.session_service import SessionService
 
 urlCierresLocal = "AdministrationPanel/src/expendedora/insert_close_expendedora.php"  # URL DE CIERRES (LOCAL)
 urlCierresCloud = "src/expendedora/insert_close_expendedora.php"  # URL DE CIERRES (CLOUD)
-urlDatos = "esp32_project/expendedora/insert_data_expendedora.php"  # URL DE REPORTES
 urlSubcierreLocal = "AdministrationPanel/src/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES (LOCAL)
 urlSubcierreCloud = "src/expendedora/insert_subcierre_expendedora.php"  # URL DE SUBCIERRES (CLOUD)
 DNS = "https://app.maquinasbonus.com/"  # DNS servidor
@@ -31,14 +31,15 @@ DEFAULT_PROMO_HOTKEYS = {
 
 import threading as _threading
 
-def _post_en_hilo(url, datos, descripcion="", retry_without_cashier_id=False):
+def _post_en_hilo(url, datos, descripcion="", retry_without_cashier_id=False, timeout_s=5, headers=None):
     """
     Envía un POST HTTP en un hilo separado con timeout.
     Nunca bloquea el hilo de Tkinter aunque no haya internet.
     """
     def _enviar():
         try:
-            resp = requests.post(url, json=datos, timeout=5)
+            req_headers = headers if isinstance(headers, dict) else {}
+            resp = requests.post(url, json=datos, timeout=timeout_s, headers=req_headers)
             print(f"[NET] {descripcion} → {resp.status_code}")
             body_preview = ""
             if resp.status_code >= 400:
@@ -59,7 +60,7 @@ def _post_en_hilo(url, datos, descripcion="", retry_without_cashier_id=False):
                 retry_payload = dict(datos)
                 retry_payload.pop("id_cajero", None)
                 retry_desc = f"{descripcion} (retry sin id_cajero)"
-                retry_resp = requests.post(url, json=retry_payload, timeout=5)
+                retry_resp = requests.post(url, json=retry_payload, timeout=timeout_s, headers=req_headers)
                 print(f"[NET] {retry_desc} → {retry_resp.status_code}")
                 if retry_resp.status_code >= 400:
                     retry_body = str(retry_resp.text or "").strip().replace("\n", " ")
@@ -105,6 +106,7 @@ class ExpendedoraGUI:
 
         # Inicializar variables de configuración
         self.config_file = "config.json"
+        self.shortcuts_file = str((Path(__file__).resolve().parent / "atajos_promociones.json"))
         self.config_repository = ConfigRepository(self.config_file)
         self.counter_service = CounterService()
         self.session_service = SessionService()
@@ -140,14 +142,12 @@ class ExpendedoraGUI:
         self.network_service = NetworkManagerService(self.config_repository)
         self.report_repository = ReportRepositoryMySQL(self.config_repository)
 
-        # Contadores de la página principal
-        self.contadores = self.counter_service.default_counters()
-
-        # Contadores de apertura
-        self.contadores_apertura = self.counter_service.default_counters()
-
-        # Contadores parciales
-        self.contadores_parciales = self.counter_service.default_counters()
+        # Contadores contables (nuevo esquema):
+        # - global: cierre diario
+        # - parcial: sesión/cajero y reportes operativos
+        self.contadores_global = self.counter_service.default_counters()
+        self.contadores_parcial = self.counter_service.default_counters()
+        self._sync_counter_aliases()
 
 
         # Flag para controlar si se realizó un cierre del día
@@ -159,11 +159,8 @@ class ExpendedoraGUI:
         self._guardar_config_timer = None          # Timer para debounce de guardar_configuracion
         
         self.cargar_configuracion()
-        
-        # Inicializar bases para contadores (Modelo: Base + Sesión)
-        self.inicio_fichas_expendidas = self.contadores["fichas_expendidas"]
-        self.inicio_apertura_fichas = self.contadores_apertura["fichas_expendidas"]
-        self.inicio_parcial_fichas = self.contadores_parciales["fichas_expendidas"]
+        self._aplicar_estado_recuperado()
+        self._recalcular_bases_contadores()
         
         # Configuración de Scroll Global
         self.current_canvas = None
@@ -210,6 +207,16 @@ class ExpendedoraGUI:
         self.header_status_frame.pack(side="right", padx=20, pady=10)
         self.status_motor_lbl = tk.Label(self.header_status_frame, text="Motor: OFF", bg="#ECF0F1", fg="#2C3E50", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
         self.status_motor_lbl.pack(side="left", padx=4)
+        self.status_motor_dir_lbl = tk.Label(
+            self.header_status_frame,
+            text="Sentido: detenido",
+            bg="#ECF0F1",
+            fg="#2C3E50",
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=4,
+        )
+        self.status_motor_dir_lbl.pack(side="left", padx=4)
         self.status_tolva_lbl = tk.Label(self.header_status_frame, text="Tolva: -", bg="#ECF0F1", fg="#2C3E50", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
         self.status_tolva_lbl.pack(side="left", padx=4)
         self.status_pendientes_lbl = tk.Label(self.header_status_frame, text="Pendientes: 0", bg="#ECF0F1", fg="#2C3E50", font=("Segoe UI", 9, "bold"), padx=10, pady=4)
@@ -226,9 +233,29 @@ class ExpendedoraGUI:
             pady=4,
             anchor="w",
         )
-        # En Raspberry con resoluciones chicas, este label se recorta fácil.
+        # En pantallas chicas este label se recorta fácil.
         # Permitimos que expanda y use el espacio sobrante del header.
         self.status_network_lbl.pack(side="left", padx=4, fill="x", expand=True)
+        self.status_esp32_lbl = tk.Label(
+            self.header_status_frame,
+            text="ESP32: -",
+            bg="#ECF0F1",
+            fg="#2C3E50",
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=4,
+        )
+        self.status_esp32_lbl.pack(side="left", padx=4)
+        self.status_mode_lbl = tk.Label(
+            self.header_status_frame,
+            text="Modo: -",
+            bg="#ECF0F1",
+            fg="#2C3E50",
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=4,
+        )
+        self.status_mode_lbl.pack(side="left", padx=4)
 
         def _destrabar_tolva_seleccionada():
             try:
@@ -254,9 +281,10 @@ class ExpendedoraGUI:
         self.btn_destrabar.pack(side="left", padx=6)
         self._ultimo_evento_core_ts = None
         self._after_fast_status_id = None
-        self._auto_calib_after_id = None
         self._fast_status_interval_ms = 120
         self._last_tolvas_signature = None
+        self._last_tolva_ids = None
+        self._tolvas_section_title = None
         self._active_page = "main"
         self._frame_to_page = {}
 
@@ -268,13 +296,35 @@ class ExpendedoraGUI:
             """
             try:
                 pendientes = int(shared_buffer.get_fichas_restantes())
+                motor_activo = bool(shared_buffer.get_motor_activo())
+                motor_direccion = str(shared_buffer.get_motor_direccion() or "detenido").lower()
                 self.status_pendientes_lbl.config(text=f"Pendientes: {pendientes}")
+                if motor_activo:
+                    self.status_motor_lbl.config(text="Motor: ON", bg="#2ECC71", fg="white")
+                    if motor_direccion == "atras":
+                        self.status_motor_dir_lbl.config(text="Sentido: ATRAS", bg="#F39C12", fg="white")
+                    else:
+                        self.status_motor_dir_lbl.config(text="Sentido: ADELANTE", bg="#2E86C1", fg="white")
+                else:
+                    self.status_motor_lbl.config(text="Motor: OFF", bg="#ECF0F1", fg="#2C3E50")
+                    self.status_motor_dir_lbl.config(text="Sentido: detenido", bg="#ECF0F1", fg="#2C3E50")
 
                 # Mantener el label grande de "Fichas Restantes" sincronizado.
                 self.contadores["fichas_restantes"] = pendientes
                 label = self.contadores_labels.get("fichas_restantes")
                 if label is not None:
                     label.config(text=f"{pendientes}")
+                try:
+                    import expendedora_core as _core_mod
+
+                    if _core_mod.esp32_is_connected():
+                        self.status_esp32_lbl.config(text="ESP32: OK", bg="#D5F5E3", fg="#145A32")
+                        self.status_mode_lbl.config(text="Modo: hardware", bg="#D5F5E3", fg="#145A32")
+                    else:
+                        self.status_esp32_lbl.config(text="ESP32: sin conexión", bg="#FADBD8", fg="#922B21")
+                        self.status_mode_lbl.config(text="Modo: simulacion", bg="#FCF3CF", fg="#7D6608")
+                except Exception:
+                    pass
             except Exception:
                 # No romper el loop de UI si algún widget todavía no existe.
                 pass
@@ -297,13 +347,14 @@ class ExpendedoraGUI:
 
         crear_boton_menu("Inicio", lambda: self.mostrar_frame(self.main_frame))
         crear_boton_menu("Contadores", lambda: self.mostrar_frame(self.contadores_page))
+        crear_boton_menu("Red", self.configurar_gestor_red)
         
-        if self.username == "admin":
+        if self._is_admin_user():
             crear_boton_menu("Configuración", lambda: self.mostrar_frame(self.config_frame))
             
         crear_boton_menu("Cierre y Reportes", lambda: self.mostrar_frame(self.reportes_frame))
         
-        if self.username == "admin":
+        if self._is_admin_user():
             crear_boton_menu("Simulación", lambda: self.mostrar_frame(self.simulacion_frame))
             
         tk.Frame(self.menu_frame, bg=self.colors["sidebar"], height=20).pack() # Espaciador
@@ -324,13 +375,14 @@ class ExpendedoraGUI:
         # --- Estado de tolvas ---
         self.tolvas_frame = tk.Frame(main_content, bg=self.colors["bg"])
         self.tolvas_frame.pack(fill="x", pady=(0, 15))
-        tk.Label(
+        self._tolvas_section_title = tk.Label(
             self.tolvas_frame,
             text="Tolvas (← / → para seleccionar)",
             font=("Segoe UI", 11, "bold"),
             bg=self.colors["bg"],
             fg="#7F8C8D",
-        ).pack(anchor="w", padx=10, pady=(0, 6))
+        )
+        self._tolvas_section_title.pack(anchor="w", padx=10, pady=(0, 6))
         self.tolva_cards = {}
         self.tolvas_cards_row = tk.Frame(self.tolvas_frame, bg=self.colors["bg"])
         self.tolvas_cards_row.pack(fill="x")
@@ -496,7 +548,7 @@ class ExpendedoraGUI:
         ).pack(side="left", padx=(14, 0))
 
         # Herramientas rápidas de simulación en Inicio (solo admin)
-        if self.username == "admin":
+        if self._is_admin_user():
             self.sim_inicio_frame = tk.Frame(self.botones_frame, bg=self.colors["card"])
             self.sim_inicio_frame.pack(fill="x", padx=10, pady=(0, 12))
             tk.Frame(self.sim_inicio_frame, bg=self.colors["primary"], height=4).pack(fill="x", side="top")
@@ -655,7 +707,7 @@ class ExpendedoraGUI:
         tk.Label(reportes_content, text="Cierre y Reportes", font=self.fonts["h1"], bg=self.colors["bg"], fg=self.colors["danger"]).pack(anchor="w", pady=(0, 20))
         
         crear_boton_redondeado(reportes_content, "Realizar Cierre", self.realizar_cierre, self.colors["danger"], "white", width=300).pack(pady=5)
-        if self.username == "admin":
+        if self._is_admin_user():
             crear_boton_redondeado(
                 reportes_content,
                 "Ver reportes BD (admin)",
@@ -779,6 +831,79 @@ class ExpendedoraGUI:
         # Reiniciar el contador de sesión al iniciar la GUI
         shared_buffer.gui_to_core_queue.put({'type': 'reset_sesion'})
         print(f"[GUI] Sesión iniciada para usuario: {username}")
+
+    @staticmethod
+    def _is_local_base_url(base_url: str) -> bool:
+        lower = str(base_url or "").lower()
+        return "127.0.0.1" in lower or "localhost" in lower
+
+    def _api_timeout_s(self) -> int:
+        try:
+            return max(1, int(float(self.api_config.get("timeout_s", 5))))
+        except (TypeError, ValueError):
+            return 5
+
+    def _api_headers(self) -> dict:
+        raw_headers = self.api_config.get("headers", {})
+        if not isinstance(raw_headers, dict):
+            raw_headers = {}
+        headers = {}
+        for key, value in raw_headers.items():
+            key_str = str(key).strip()
+            value_str = str(value).strip()
+            if key_str and value_str:
+                headers[key_str] = value_str
+        headers.setdefault("User-Agent", "ExpendedoraGUI/1.0")
+        return headers
+
+    def _iter_backend_targets(self, local_path: str, cloud_path: str):
+        base_urls = self.api_config.get("base_urls", [DNSLocal.rstrip("/"), DNS.rstrip("/")])
+        if isinstance(base_urls, str):
+            base_urls = [base_urls]
+        if not isinstance(base_urls, list) or not base_urls:
+            base_urls = [DNSLocal.rstrip("/"), DNS.rstrip("/")]
+        for base in base_urls:
+            normalized_base = str(base or "").strip().rstrip("/")
+            if not normalized_base:
+                continue
+            endpoint = local_path if self._is_local_base_url(normalized_base) else cloud_path
+            endpoint = str(endpoint or "").strip().lstrip("/")
+            if not endpoint:
+                continue
+            scope = "local" if self._is_local_base_url(normalized_base) else "remoto"
+            yield f"{normalized_base}/{endpoint}", scope
+
+    def _post_backend_event(
+        self,
+        *,
+        local_path: str,
+        cloud_path: str,
+        payload: dict,
+        descripcion: str,
+        retry_without_cashier_id: bool = False,
+    ) -> None:
+        timeout_s = self._api_timeout_s()
+        headers = self._api_headers()
+        for url, scope in self._iter_backend_targets(local_path, cloud_path):
+            _post_en_hilo(
+                url,
+                payload,
+                f"{descripcion} {scope}",
+                retry_without_cashier_id=retry_without_cashier_id,
+                timeout_s=timeout_s,
+                headers=headers,
+            )
+
+    def _sync_counter_aliases(self):
+        """
+        Alias legacy temporal:
+        - contadores         -> contadores_global
+        - contadores_apertura-> contadores_global
+        - contadores_parciales -> contadores_parcial
+        """
+        self.contadores = self.contadores_global
+        self.contadores_apertura = self.contadores_global
+        self.contadores_parciales = self.contadores_parcial
 
     def _apply_kiosk_window(self):
         """
@@ -1003,7 +1128,7 @@ class ExpendedoraGUI:
         frame.pack(fill="both", expand=True)
         self._active_page = self._frame_to_page.get(frame, "other")
 
-        # En Raspberry touch a veces el primer cambio de vista queda "a medio render".
+        # En pantallas táctiles a veces el primer cambio de vista queda "a medio render".
         # Forzamos layout para que el contenido aparezca completo sin doble toque.
         try:
             self.root.update_idletasks()
@@ -1041,12 +1166,16 @@ class ExpendedoraGUI:
         func()
         return "break"
 
+    def _is_admin_user(self) -> bool:
+        return str(getattr(self, "username", "") or "").strip().lower() == "admin"
+
     def _normalizar_atajos_promociones(self, hotkeys_cfg):
         if not isinstance(hotkeys_cfg, dict):
             hotkeys_cfg = {}
         normalized = {}
         for promo, default_keys in DEFAULT_PROMO_HOTKEYS.items():
             raw = hotkeys_cfg.get(promo, default_keys)
+            raw_is_list = isinstance(raw, list)
             if isinstance(raw, str):
                 raw = [raw]
             if not isinstance(raw, list):
@@ -1056,10 +1185,39 @@ class ExpendedoraGUI:
                 key_str = str(key).strip()
                 if key_str and key_str not in clean:
                     clean.append(key_str)
-            if not clean:
+            # Si el usuario guardó explícitamente una promo sin atajos ([]), respetarlo.
+            # Solo reponer defaults cuando el valor de entrada no era una lista válida.
+            if not clean and not raw_is_list:
                 clean = list(default_keys)
             normalized[promo] = clean
         return normalized
+
+    def _load_shortcuts_from_file(self):
+        try:
+            shortcuts_path = Path(self.shortcuts_file)
+            if not shortcuts_path.exists():
+                return None
+            with open(shortcuts_path, "r", encoding="utf-8") as file_obj:
+                payload = json.load(file_obj)
+            if isinstance(payload, dict) and isinstance(payload.get("promociones"), dict):
+                payload = payload.get("promociones")
+            return self._normalizar_atajos_promociones(payload)
+        except Exception as exc:
+            print(f"[GUI] Aviso cargando atajos desde archivo: {exc}")
+            return None
+
+    def _save_shortcuts_to_file(self):
+        payload = {
+            "promociones": self._normalizar_atajos_promociones(self.atajos_promociones),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        try:
+            shortcuts_path = Path(self.shortcuts_file)
+            shortcuts_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(shortcuts_path, "w", encoding="utf-8") as file_obj:
+                json.dump(payload, file_obj, indent=2, ensure_ascii=False)
+        except Exception as exc:
+            print(f"[GUI] Aviso guardando atajos en archivo: {exc}")
 
     def _actualizar_candidatos_atajos(self):
         candidates = set()
@@ -1137,18 +1295,20 @@ class ExpendedoraGUI:
 
             nuevo_total = self.inicio_fichas_expendidas + fichas_expendidas_hw
 
+            contadores_cambiaron = False
             if nuevo_total != self.contadores["fichas_expendidas"]:
                 self.contadores["fichas_expendidas"] = nuevo_total
-                self.contadores_apertura["fichas_expendidas"] = self.inicio_apertura_fichas + fichas_expendidas_hw
-                self.contadores_parciales["fichas_expendidas"] = self.inicio_parcial_fichas + fichas_expendidas_hw
-                if self._active_page in ("main", "contadores"):
-                    self.actualizar_contadores_gui()
-                self.guardar_configuracion()
+                self.contadores_parcial["fichas_expendidas"] = self.inicio_parcial_fichas + fichas_expendidas_hw
+                contadores_cambiaron = True
 
             if fichas_restantes_hw != self.contadores["fichas_restantes"]:
                 self.contadores["fichas_restantes"] = fichas_restantes_hw
+                contadores_cambiaron = True
+
+            if contadores_cambiaron:
                 if self._active_page in ("main", "contadores"):
                     self.actualizar_contadores_gui()
+                self._persistir_estado_critico("sync_core")
 
             if self._active_page == "main":
                 self.actualizar_tolvas_gui()
@@ -1170,12 +1330,67 @@ class ExpendedoraGUI:
         self.core.seleccionar_tolva_anterior()
         self.actualizar_tolvas_gui()
 
+    def _hoppers_configurados(self):
+        hoppers = self.maquina_hoppers if isinstance(self.maquina_hoppers, list) else []
+        return [h for h in hoppers if isinstance(h, dict)]
+
+    def _estados_tolvas_fallback(self):
+        """Estados desde config cuando el core aún no publicó tolvas."""
+        hoppers_cfg = self._hoppers_configurados()
+        if not hoppers_cfg:
+            return []
+        estados = []
+        selected_id = None
+        try:
+            live = self.core.get_tolvas_status()
+            sel = next((t for t in live if t.get("seleccionada")), None) if live else None
+            if sel:
+                selected_id = int(sel.get("id", 0))
+        except Exception:
+            selected_id = None
+        for idx, hopper in enumerate(hoppers_cfg):
+            hopper_id = int(hopper.get("id", idx + 1))
+            estados.append(
+                {
+                    "id": hopper_id,
+                    "nombre": str(hopper.get("nombre", f"Tolva {hopper_id}")),
+                    "seleccionada": hopper_id == selected_id if selected_id else idx == 0,
+                    "trabada": False,
+                }
+            )
+        if estados and not any(e["seleccionada"] for e in estados):
+            estados[0]["seleccionada"] = True
+        return estados
+
+    def _eliminar_tolva_cards_obsoletas(self, active_ids):
+        removed = False
+        for tolva_id in list(self.tolva_cards.keys()):
+            if tolva_id not in active_ids:
+                try:
+                    self.tolva_cards[tolva_id]["card"].destroy()
+                except Exception:
+                    pass
+                del self.tolva_cards[tolva_id]
+                removed = True
+        if removed:
+            self._last_tolvas_signature = None
+        return removed
+
+    def _layout_tolva_card(self, card, index, total):
+        """Distribuye tarjetas en fila según cantidad de tolvas configuradas."""
+        if total <= 1:
+            card.grid(row=0, column=0, padx=10, pady=4, sticky="nsew")
+            self.tolvas_cards_row.grid_columnconfigure(0, weight=1)
+        else:
+            cols = min(total, 3)
+            row = index // cols
+            col = index % cols
+            card.grid(row=row, column=col, padx=8, pady=4, sticky="nsew")
+            for c in range(cols):
+                self.tolvas_cards_row.grid_columnconfigure(c, weight=1)
+
     def mostrar_menu_tolva(self, tolva_id):
         menu = tk.Menu(self.root, tearoff=0)
-        menu.add_command(
-            label="Auto-calibrar tolva",
-            command=lambda tid=tolva_id: self.iniciar_auto_calibracion_tolva_ui(tid),
-        )
         menu.add_command(
             label="Calibración manual...",
             command=self.configurar_calibracion_tolvas,
@@ -1187,70 +1402,26 @@ class ExpendedoraGUI:
         finally:
             menu.grab_release()
 
-    def iniciar_auto_calibracion_tolva_ui(self, tolva_id):
-        confirm = messagebox.askyesno(
-            "Auto-calibración",
-            f"Se va a auto-calibrar la tolva {tolva_id}.\n"
-            "El sistema va a dispensar fichas de prueba, medir tiempos y guardar calibración.\n\n"
-            "¿Continuar?",
-        )
-        if not confirm:
-            return
-
-        ok, msg = self.core.iniciar_auto_calibracion_tolva(tolva_id, samples=32)
-        if not ok:
-            messagebox.showwarning("Auto-calibración", msg)
-            return
-        self.actualizar_tolvas_gui()
-        self._poll_auto_calibracion_ui()
-
-    def _poll_auto_calibracion_ui(self):
-        estado = self.core.obtener_estado_auto_calibracion()
-        self.actualizar_tolvas_gui()
-        if estado.get("running"):
-            self._auto_calib_after_id = self.root.after(600, self._poll_auto_calibracion_ui)
-            return
-        self._auto_calib_after_id = None
-        if estado.get("finished"):
-            err = str(estado.get("error", "") or "").strip()
-            result = estado.get("result", {}) if isinstance(estado.get("result"), dict) else {}
-            if err:
-                messagebox.showwarning("Auto-calibración", f"Finalizó con aviso: {err}")
-            elif result:
-                messagebox.showinfo(
-                    "Auto-calibración",
-                    "Calibración guardada correctamente:\n"
-                    f"pulso_min_s={result.get('pulso_min_s')}\n"
-                    f"pulso_max_s={result.get('pulso_max_s')}\n"
-                    f"timeout_motor_s={result.get('timeout_motor_s')}\n"
-                    f"muestras={result.get('samples')}",
-                )
-            self.guardar_configuracion(inmediato=True)
-
     def actualizar_tolvas_gui(self):
         estados = self.core.get_tolvas_status()
         if not estados:
-            # Fallback defensivo: en algunos arranques de Raspberry el core puede
-            # demorar en publicar estado de tolvas durante los primeros segundos.
-            hoppers_cfg = self.maquina_hoppers if isinstance(self.maquina_hoppers, list) else []
-            if not hoppers_cfg:
-                return
-            estados = []
-            for idx, hopper in enumerate(hoppers_cfg, start=1):
-                if not isinstance(hopper, dict):
-                    continue
-                estados.append(
-                    {
-                        "id": int(hopper.get("id", idx)),
-                        "nombre": str(hopper.get("nombre", f"Tolva {idx}")),
-                        "seleccionada": idx == 1,
-                        "trabada": False,
-                        "calibrando": False,
-                        "calibracion_progreso": 0,
-                    }
-                )
-            if not estados:
-                return
+            estados = self._estados_tolvas_fallback()
+        if not estados:
+            if self._tolvas_section_title:
+                self._tolvas_section_title.config(text="Tolvas: ninguna configurada en config.json")
+            return
+
+        n_tolvas = len(estados)
+        if self._tolvas_section_title:
+            plural = "tolva" if n_tolvas == 1 else "tolvas"
+            self._tolvas_section_title.config(
+                text=f"Tolvas ({n_tolvas} {plural}) — ← / → para seleccionar"
+            )
+
+        active_ids = {int(estado.get("id", 0)) for estado in estados}
+        if active_ids != self._last_tolva_ids:
+            self._last_tolva_ids = active_ids
+            self._eliminar_tolva_cards_obsoletas(active_ids)
 
         signature = tuple(
             (
@@ -1258,8 +1429,6 @@ class ExpendedoraGUI:
                 str(estado.get("nombre", "")),
                 bool(estado.get("seleccionada")),
                 bool(estado.get("trabada")),
-                bool(estado.get("calibrando")),
-                int(estado.get("calibracion_progreso", 0) or 0),
             )
             for estado in estados
         )
@@ -1267,12 +1436,12 @@ class ExpendedoraGUI:
             self.actualizar_estado_operacion_ui(estados_tolvas=estados)
             return
 
-        for estado in estados:
-            tolva_id = estado["id"]
+        for index, estado in enumerate(estados):
+            tolva_id = int(estado["id"])
             if tolva_id not in self.tolva_cards:
                 card = tk.Frame(self.tolvas_cards_row, bg="#ECEFF1", bd=0, highlightthickness=2)
-                card.pack(side="left", fill="both", expand=True, padx=10, pady=4)
-                if self.username == "admin":
+                self._layout_tolva_card(card, index, n_tolvas)
+                if self._is_admin_user():
                     gear_btn = tk.Button(
                         card,
                         text="⚙",
@@ -1350,14 +1519,7 @@ class ExpendedoraGUI:
             estado_label = refs["estado_label"]
             icon_canvas = refs["icon_canvas"]
 
-            if estado.get("calibrando"):
-                bg_color = "#5DADE2"
-                text_color = "white"
-                progreso = int(estado.get("calibracion_progreso", 0))
-                estado_text = f"CALIBRANDO {progreso}%"
-                icon_color = "#D6EAF8"
-                border_color = "#AED6F1"
-            elif estado["trabada"] and estado["seleccionada"]:
+            if estado["trabada"] and estado["seleccionada"]:
                 bg_color = "#C0392B"  # rojo más oscuro para "cursor" sobre tolva trabada
                 text_color = "white"
                 estado_text = "SELECCIONADA / TRABADA"
@@ -1405,12 +1567,18 @@ class ExpendedoraGUI:
         seleccionada = next((t for t in estados_tolvas if t.get("seleccionada")), None) if estados_tolvas else None
         trabada = bool(seleccionada and seleccionada.get("trabada"))
         motor_activo = bool(shared_buffer.get_motor_activo())
+        motor_direccion = str(shared_buffer.get_motor_direccion() or "detenido").lower()
         pendientes = int(shared_buffer.get_fichas_restantes())
 
         if motor_activo:
             self.status_motor_lbl.config(text="Motor: ON", bg="#2ECC71", fg="white")
+            if motor_direccion == "atras":
+                self.status_motor_dir_lbl.config(text="Sentido: ATRAS", bg="#F39C12", fg="white")
+            else:
+                self.status_motor_dir_lbl.config(text="Sentido: ADELANTE", bg="#2E86C1", fg="white")
         else:
             self.status_motor_lbl.config(text="Motor: OFF", bg="#ECF0F1", fg="#2C3E50")
+            self.status_motor_dir_lbl.config(text="Sentido: detenido", bg="#ECF0F1", fg="#2C3E50")
 
         if seleccionada:
             if trabada:
@@ -1466,6 +1634,9 @@ class ExpendedoraGUI:
         self.heartbeat_intervalo_s = config.get("heartbeat", {}).get("intervalo_s", self.heartbeat_intervalo_s)
         self.maquina_hoppers = config.get("maquina", {}).get("hoppers", self.maquina_hoppers)
         self.atajos_promociones = self._normalizar_atajos_promociones(config.get("atajos", {}).get("promociones", self.atajos_promociones))
+        shortcuts_file_data = self._load_shortcuts_from_file()
+        if isinstance(shortcuts_file_data, dict):
+            self.atajos_promociones = shortcuts_file_data
         self.operacion_config = config.get("operacion", self.operacion_config)
         if not isinstance(self.operacion_config, dict):
             self.operacion_config = {"ultima_apertura_fecha": ""}
@@ -1484,9 +1655,83 @@ class ExpendedoraGUI:
             }
         if not str(self.network_manager_cfg.get("backend_url", "")).strip():
             self.network_manager_cfg["backend_url"] = self._build_backend_probe_url()
-        self.contadores = self.counter_service.ensure_schema(config.get("contadores", self.contadores))
-        self.contadores_apertura = self.counter_service.ensure_schema(config.get("contadores_apertura", self.contadores_apertura))
-        self.contadores_parciales = self.counter_service.ensure_schema(config.get("contadores_parciales", self.contadores_parciales))
+        self.contadores_global = self.counter_service.ensure_schema(
+            config.get("contadores_global", config.get("contadores", self.contadores_global))
+        )
+        self.contadores_parcial = self.counter_service.ensure_schema(
+            config.get("contadores_parcial", config.get("contadores_parciales", self.contadores_parcial))
+        )
+        self._sync_counter_aliases()
+        self._last_tolvas_signature = None
+        self._last_tolva_ids = None
+        try:
+            self.core.recargar_tolvas_desde_config()
+        except Exception as exc:
+            print(f"[GUI] Recarga de tolvas tras config: {exc}")
+        if getattr(self, "root", None):
+            try:
+                self.root.after(0, self.actualizar_tolvas_gui)
+            except Exception:
+                pass
+
+    def _aplicar_estado_recuperado(self):
+        """Aplica snapshot recuperado por el core (post-corte / arranque)."""
+        recovered = None
+        try:
+            recovered = self.core.get_recovered_state()
+        except Exception as exc:
+            print(f"[GUI] Sin estado recuperado del core: {exc}")
+        if not recovered:
+            return
+        self.contadores_global = self.counter_service.ensure_schema(
+            recovered.get("contadores_global", recovered.get("contadores", self.contadores_global))
+        )
+        self.contadores_parcial = self.counter_service.ensure_schema(
+            recovered.get("contadores_parcial", recovered.get("contadores_parciales", self.contadores_parcial))
+        )
+        self._sync_counter_aliases()
+        buf = recovered.get("buffer") or {}
+        restantes = int(buf.get("fichas_restantes", self.contadores.get("fichas_restantes", 0)))
+        self.contadores["fichas_restantes"] = restantes
+        shared_buffer.register_gui_counters(
+            self.contadores_global, self.contadores_global, self.contadores_parcial
+        )
+
+    def _recalcular_bases_contadores(self):
+        """Base + sesión en RAM: evita doble conteo tras recuperación."""
+        sesion = int(shared_buffer.get_fichas_expendidas())
+        self.inicio_fichas_expendidas = int(self.contadores["fichas_expendidas"]) - sesion
+        self.inicio_apertura_fichas = int(self.contadores_global["fichas_expendidas"]) - sesion
+        self.inicio_parcial_fichas = int(self.contadores_parcial["fichas_expendidas"]) - sesion
+
+    def _persistir_estado_critico(self, reason: str):
+        """Snapshot atómico de contadores + buffer; sincroniza config.json."""
+        from infra.state_store import build_snapshot, save_snapshot
+
+        self.contadores["fichas_restantes"] = int(shared_buffer.get_fichas_restantes())
+        shared_buffer.set_fichas_restantes(self.contadores["fichas_restantes"], immediate=False)
+        shared_buffer.set_fichas_expendidas(int(self.contadores["fichas_expendidas"]), immediate=False)
+        shared_buffer.set_r_cuenta(float(self.contadores["dinero_ingresado"]), immediate=False)
+        shared_buffer.register_gui_counters(
+            self.contadores_global, self.contadores_global, self.contadores_parcial
+        )
+        buf = {
+            "fichas_restantes": shared_buffer.get_fichas_restantes(),
+            "fichas_expendidas": shared_buffer.get_fichas_expendidas_total(),
+            "fichas_expendidas_sesion": shared_buffer.get_fichas_expendidas(),
+            "cuenta": shared_buffer.get_cuenta(),
+            "r_cuenta": shared_buffer.get_r_cuenta(),
+        }
+        snap = build_snapshot(
+            buffer=buf,
+            contadores_global=self.contadores_global,
+            contadores_parcial=self.contadores_parcial,
+            reason=reason,
+        )
+        config = self.config_repository.load()
+        config["contadores_global"] = self.contadores_global
+        config["contadores_parcial"] = self.contadores_parcial
+        save_snapshot(snap, sync_config=config, config_path=self.config_repository.config_path)
 
     def guardar_configuracion(self, inmediato=False):
         """
@@ -1515,9 +1760,8 @@ class ExpendedoraGUI:
                 "promociones": self.promociones,
                 "valor_ficha": self.valor_ficha,
                 "device_id": codigo_hardware,
-                "contadores": self.contadores,
-                "contadores_apertura": self.contadores_apertura,
-                "contadores_parciales": self.contadores_parciales,
+                "contadores_global": self.contadores_global,
+                "contadores_parcial": self.contadores_parcial,
                 "api": self.api_config,
                 "admin": {"dni_admin": self.dni_admin},
                 "atajos": {"promociones": self._normalizar_atajos_promociones(self.atajos_promociones)},
@@ -1556,9 +1800,14 @@ class ExpendedoraGUI:
         message = str(status.get("message", "") or "").strip()
         conn_name = str(status.get("active_connection", "") or "").strip()
         signal = status.get("signal_percent")
+        internet_ok = bool(status.get("internet_ok"))
+        backend_ok = bool(status.get("backend_ok"))
         signal_text = f" {int(signal)}%" if isinstance(signal, (int, float)) else ""
         conn_text = f" {conn_name}" if conn_name else ""
-        label_text = f"Red: {level}{conn_text}{signal_text}"
+        net_badges = []
+        net_badges.append("INT:OK" if internet_ok else "INT:--")
+        net_badges.append("API:OK" if backend_ok else "API:--")
+        label_text = f"Red: {level}{conn_text}{signal_text} {' '.join(net_badges)}"
         if message and not conn_name:
             label_text = f"Red: {level} ({message})"
 
@@ -1597,8 +1846,9 @@ class ExpendedoraGUI:
         self.cierre_realizado = False
 
         # Nuevo ciclo diario
-        self.contadores_apertura = self.counter_service.default_counters()
-        self.contadores_parciales = self.counter_service.default_counters()
+        self.contadores_global = self.counter_service.default_counters()
+        self.contadores_parcial = self.counter_service.default_counters()
+        self._sync_counter_aliases()
 
         # Ajustar bases para mantener consistencia con contador hardware acumulado
         hw_actual = shared_buffer.get_fichas_expendidas()
@@ -1607,15 +1857,19 @@ class ExpendedoraGUI:
 
         apertura_info = self.session_service.build_daily_close(
             self.device_id,
-            self.contadores_apertura,
+            self.contadores_global,
             event_type="apertura",
         )
-        _post_en_hilo(DNS + urlCierresCloud, apertura_info, "Apertura automática remota")
-        _post_en_hilo(DNSLocal + urlCierresLocal, apertura_info, "Apertura automática local")
+        self._post_backend_event(
+            local_path=urlCierresLocal,
+            cloud_path=urlCierresCloud,
+            payload=apertura_info,
+            descripcion="Apertura automática",
+        )
 
         self.operacion_config["ultima_apertura_fecha"] = hoy
         self.actualizar_contadores_gui()
-        self.guardar_configuracion(inmediato=True)
+        self._persistir_estado_critico("apertura")
 
     def _set_modal_grab(self, window, retries=20, retry_delay_ms=100):
         """
@@ -1710,6 +1964,16 @@ class ExpendedoraGUI:
         rows = {}
         capturando_para = {"promo": None}
 
+        def persistir_atajos_en_vivo():
+            normalized_live = self._normalizar_atajos_promociones(current_hotkeys)
+            self.atajos_promociones = normalized_live
+            self.aplicar_atajos_promos_root()
+            for entry in self._entries_operativos:
+                self.aplicar_atajos_promos_entry(entry)
+            self._save_shortcuts_to_file()
+            # Persistimos también en config para mantener compatibilidad.
+            self.guardar_configuracion(inmediato=True)
+
         def refresh_row(promo):
             keys = current_hotkeys.get(promo, [])
             listbox = rows[promo]["listbox"]
@@ -1727,11 +1991,13 @@ class ExpendedoraGUI:
         def limpiar_promo(promo):
             current_hotkeys[promo] = []
             refresh_row(promo)
+            persistir_atajos_en_vivo()
             estado_captura.config(text=f"Atajos de {promo} limpiados.", fg="#7F8C8D")
 
         def agregar_default(promo):
             current_hotkeys[promo] = list(DEFAULT_PROMO_HOTKEYS[promo])
             refresh_row(promo)
+            persistir_atajos_en_vivo()
             estado_captura.config(text=f"Atajos por defecto cargados en {promo}.", fg="#7F8C8D")
 
         def quitar_tecla_seleccionada(promo):
@@ -1745,6 +2011,7 @@ class ExpendedoraGUI:
                 return
             current_hotkeys[promo] = [key for key in current_hotkeys.get(promo, []) if key != key_value]
             refresh_row(promo)
+            persistir_atajos_en_vivo()
             estado_captura.config(text=f"Tecla {key_value} quitada de {promo}.", fg="#7F8C8D")
 
         def on_keypress_capture(event):
@@ -1771,6 +2038,7 @@ class ExpendedoraGUI:
             if key_token not in current_hotkeys[promo]:
                 current_hotkeys[promo].append(key_token)
             refresh_row(promo)
+            persistir_atajos_en_vivo()
             estado_captura.config(text=f"{key_token} agregado a {promo}.", fg="#1E8449")
             ultima_tecla_lbl.config(text=f"Última tecla capturada: {key_token}")
             capturando_para["promo"] = None
@@ -1856,6 +2124,7 @@ class ExpendedoraGUI:
             self.aplicar_atajos_promos_root()
             for entry in self._entries_operativos:
                 self.aplicar_atajos_promos_entry(entry)
+            self._save_shortcuts_to_file()
             self.guardar_configuracion(inmediato=True)
             config_window.destroy()
             messagebox.showinfo("Atajos", "Atajos de promociones guardados correctamente.")
@@ -1883,8 +2152,10 @@ class ExpendedoraGUI:
         body.pack(fill="both", expand=True, padx=16, pady=4)
 
         entries = {}
-        hoppers = self.maquina_hoppers if isinstance(self.maquina_hoppers, list) else []
-        for idx, hopper in enumerate(hoppers[:3]):
+        hoppers = self._hoppers_configurados()
+        if not hoppers:
+            tk.Label(body, text="No hay tolvas en config.json (maquina.hoppers).", bg="#ffffff", fg="#7F8C8D").pack(pady=20)
+        for idx, hopper in enumerate(hoppers):
             card = tk.Frame(body, bg="#F8F9F9", bd=1, relief="solid")
             card.pack(fill="x", pady=6)
             tk.Label(
@@ -1933,7 +2204,9 @@ class ExpendedoraGUI:
                     if pulso_max_ms < pulso_min_ms:
                         raise ValueError("Pulso máximo no puede ser menor a pulso mínimo.")
 
-                    hopper = self.maquina_hoppers[idx]
+                    if idx < 0 or idx >= len(hoppers):
+                        continue
+                    hopper = hoppers[idx]
                     calibracion = hopper.get("calibracion", {})
                     if not isinstance(calibracion, dict):
                         calibracion = {}
@@ -1959,10 +2232,7 @@ class ExpendedoraGUI:
         tk.Button(botones, text="Cancelar", command=config_window.destroy, bg="#D32F2F", fg="white", font=("Arial", 11), bd=0).pack(side="left")
 
     def configurar_gestor_red(self):
-        if self.username != "admin":
-            messagebox.showerror("Permiso denegado", "Solo administrador puede configurar el gestor de red.")
-            return
-
+        is_admin = self._is_admin_user()
         config_window = tk.Toplevel(self.root)
         config_window.title("Configurar gestor de red")
         config_window.geometry("560x560")
@@ -1988,19 +2258,32 @@ class ExpendedoraGUI:
 
         tk.Label(
             content_frame,
-            text="Monitor en tiempo real + reconexión automática con NetworkManager (nmcli).",
+            text=(
+                "Monitor en tiempo real + reconexión automática (Linux: nmcli, Windows: netsh)."
+                if is_admin
+                else "Modo usuario: solo conexión Wi-Fi segura. Configuración avanzada bloqueada."
+            ),
             bg="#ffffff",
             fg="#7F8C8D",
             font=("Segoe UI", 10),
             justify="left",
         ).pack(anchor="w", pady=(0, 10))
-        tk.Checkbutton(
-            content_frame,
-            text="Habilitar gestor de red",
-            variable=enabled_var,
-            bg="#ffffff",
-            font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", pady=(0, 10))
+        if is_admin:
+            tk.Checkbutton(
+                content_frame,
+                text="Habilitar gestor de red",
+                variable=enabled_var,
+                bg="#ffffff",
+                font=("Segoe UI", 10, "bold"),
+            ).pack(anchor="w", pady=(0, 10))
+        else:
+            tk.Label(
+                content_frame,
+                text="Los parámetros de monitor/reconexión se gestionan por administrador.",
+                bg="#ffffff",
+                fg="#A04000",
+                font=("Segoe UI", 9, "bold"),
+            ).pack(anchor="w", pady=(0, 10))
 
         form = tk.Frame(content_frame, bg="#ffffff")
         form.pack(fill="x", pady=(0, 8))
@@ -2014,18 +2297,53 @@ class ExpendedoraGUI:
                 entry_kwargs["show"] = show
             tk.Entry(row, **entry_kwargs).pack(side="left", fill="x", expand=True)
 
-        add_row("Intervalo de chequeo (s)", check_interval_var)
-        add_row("Fallas antes de reconectar", retry_var)
-        add_row("Timeout backend (s)", timeout_var)
-        add_row("Host de prueba internet", internet_host_var)
-        add_row("URL backend para healthcheck", backend_url_var)
-        add_row("Interfaz preferida (ej: wlan0)", iface_var)
-        add_row("Wi-Fi SSID", wifi_ssid_var)
+        if is_admin:
+            add_row("Intervalo de chequeo (s)", check_interval_var)
+            add_row("Fallas antes de reconectar", retry_var)
+            add_row("Timeout backend (s)", timeout_var)
+            add_row("Host de prueba internet", internet_host_var)
+            add_row("URL backend para healthcheck", backend_url_var)
+            add_row("Interfaz preferida (ej: wlan0)", iface_var)
+        ssid_row = tk.Frame(form, bg="#ffffff")
+        ssid_row.pack(fill="x", pady=5)
+        tk.Label(ssid_row, text="Wi-Fi SSID", width=26, anchor="w", bg="#ffffff", font=("Segoe UI", 9)).pack(side="left")
+        ssid_combo = ttk.Combobox(
+            ssid_row,
+            textvariable=wifi_ssid_var,
+            font=("Segoe UI", 9),
+            state="normal",
+        )
+        ssid_combo.pack(side="left", fill="x", expand=True)
+        tk.Button(
+            ssid_row,
+            text="Refrescar",
+            bg="#5D6D7E",
+            fg="white",
+            font=("Segoe UI", 8, "bold"),
+            bd=0,
+            padx=8,
+            command=lambda: refresh_ssid_options(),
+        ).pack(side="left", padx=(6, 0))
         add_row("Wi-Fi contraseña", wifi_password_var, show="*")
+
+        def refresh_ssid_options():
+            options = self.network_service.list_wifi_networks()
+            if not options:
+                return
+            ssid_combo["values"] = options
+            current = wifi_ssid_var.get().strip()
+            if not current:
+                wifi_ssid_var.set(options[0])
+
+        refresh_ssid_options()
 
         tk.Label(
             content_frame,
-            text="Tip: definí SSID y contraseña para aplicar conexión Wi-Fi desde este panel.",
+            text=(
+                "Tip: podés seleccionar una red detectada o escribir un SSID manualmente."
+                if is_admin
+                else "Solo se permite cambiar SSID y contraseña Wi-Fi en modo usuario."
+            ),
             bg="#ffffff",
             fg="#7F8C8D",
             font=("Segoe UI", 9),
@@ -2033,17 +2351,23 @@ class ExpendedoraGUI:
 
         def guardar():
             try:
-                new_cfg = {
-                    "enabled": bool(enabled_var.get()),
-                    "check_interval_s": max(2, int(float(check_interval_var.get()))),
-                    "reconnect_after_failures": max(1, int(float(retry_var.get()))),
-                    "backend_timeout_s": max(0.5, float(timeout_var.get())),
-                    "internet_host": internet_host_var.get().strip() or "8.8.8.8",
-                    "backend_url": backend_url_var.get().strip(),
-                    "preferred_interface": iface_var.get().strip(),
-                    "wifi_ssid": wifi_ssid_var.get().strip(),
-                    "wifi_password": wifi_password_var.get(),
-                }
+                if is_admin:
+                    new_cfg = {
+                        "enabled": bool(enabled_var.get()),
+                        "check_interval_s": max(2, int(float(check_interval_var.get()))),
+                        "reconnect_after_failures": max(1, int(float(retry_var.get()))),
+                        "backend_timeout_s": max(0.5, float(timeout_var.get())),
+                        "internet_host": internet_host_var.get().strip() or "8.8.8.8",
+                        "backend_url": backend_url_var.get().strip(),
+                        "preferred_interface": iface_var.get().strip(),
+                        "wifi_ssid": wifi_ssid_var.get().strip(),
+                        "wifi_password": wifi_password_var.get(),
+                    }
+                else:
+                    # Usuario común: solo puede actualizar credenciales Wi-Fi.
+                    new_cfg = dict(cfg)
+                    new_cfg["wifi_ssid"] = wifi_ssid_var.get().strip()
+                    new_cfg["wifi_password"] = wifi_password_var.get()
             except ValueError:
                 messagebox.showerror("Error", "Revisá los valores numéricos del gestor de red.")
                 return
@@ -2064,6 +2388,26 @@ class ExpendedoraGUI:
 
         btn_row = tk.Frame(config_window, bg="#ffffff")
         btn_row.pack(side="bottom", fill="x", padx=16, pady=(6, 12))
+
+        def conectar_ahora():
+            ok, detail = self.network_service.connect_configured_network()
+            if ok:
+                messagebox.showinfo("Gestor de red", "Conexión iniciada.")
+            else:
+                messagebox.showwarning("Gestor de red", f"No se pudo conectar: {detail}")
+
+        tk.Button(
+            btn_row,
+            text="Conectar ahora",
+            command=conectar_ahora,
+            bg="#2980B9",
+            fg="white",
+            font=("Arial", 11, "bold"),
+            activebackground="#1F618D",
+            activeforeground="white",
+            bd=0,
+            width=14,
+        ).pack(side="left", padx=(0, 8))
         tk.Button(
             btn_row,
             text="Guardar",
@@ -2090,7 +2434,7 @@ class ExpendedoraGUI:
         ).pack(side="left")
 
     def abrir_reportes_admin(self):
-        if self.username != "admin":
+        if not self._is_admin_user():
             messagebox.showerror("Permiso denegado", "Solo administrador puede ver reportes de BD.")
             return
 
@@ -2389,6 +2733,22 @@ class ExpendedoraGUI:
         tk.Button(config_window, text="Guardar", command=guardar_dni, bg="#4CAF50", fg="white", font=("Arial", 12), bd=0).pack(pady=5)
         tk.Button(config_window, text="Cancelar", command=config_window.destroy, bg="#D32F2F", fg="white", font=("Arial", 12), bd=0).pack(pady=5)
 
+    def _cargar_fichas_en_buffer(self, cantidad: int) -> int:
+        """Encola add_fichas y aplica al buffer antes de persistir (evita race con GUI)."""
+        shared_buffer.gui_to_core_queue.put({"type": "add_fichas", "cantidad": cantidad})
+        shared_buffer.process_gui_commands()
+        restantes = int(shared_buffer.get_fichas_restantes())
+        if restantes > 0:
+            # Reflejo inmediato al presionar Expender/Enter (sin esperar primer TOKEN).
+            shared_buffer.set_motor_activo(True)
+            shared_buffer.set_motor_direccion("adelante")
+        self.contadores["fichas_restantes"] = restantes
+        label = self.contadores_labels.get("fichas_restantes")
+        if label is not None:
+            label.config(text=f"{restantes}")
+        self.actualizar_estado_operacion_ui()
+        return restantes
+
     def procesar_expender_fichas(self):
         try:
             cantidad_str = self.entry_fichas.get()
@@ -2402,26 +2762,20 @@ class ExpendedoraGUI:
                 self.entry_fichas.focus_set()  # <-- AÑADIR ESTO
                 return
 
-            # Actualiza la GUI de forma optimista
-            current_fichas = self.contadores["fichas_restantes"]
-            self.contadores_labels["fichas_restantes"].config(text=f"{current_fichas + cantidad_fichas}")
-
-            # Enviar comando al core
-            shared_buffer.gui_to_core_queue.put({'type': 'add_fichas', 'cantidad': cantidad_fichas})
+            # Cargar en buffer de inmediato (no optimista: evita persistir 0)
+            self._cargar_fichas_en_buffer(cantidad_fichas)
 
             # Actualizar contadores
             dinero = cantidad_fichas * self.valor_ficha
             self.contadores["dinero_ingresado"] += dinero
-            self.contadores_apertura["dinero_ingresado"] += dinero
-            self.contadores_parciales["dinero_ingresado"] += dinero
+            self.contadores_parcial["dinero_ingresado"] += dinero
 
             self.contadores["fichas_normales"] += cantidad_fichas
-            self.contadores_apertura["fichas_normales"] += cantidad_fichas
-            self.contadores_parciales["fichas_normales"] += cantidad_fichas
+            self.contadores_parcial["fichas_normales"] += cantidad_fichas
 
-            shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"])
+            shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"], immediate=False)
 
-            self.guardar_configuracion()
+            self._persistir_estado_critico("expender_fichas")
             self.contadores_labels["dinero_ingresado"].config(text=f"${self.contadores['dinero_ingresado']:.2f}")
             
             # Limpiar el campo de entrada
@@ -2448,18 +2802,13 @@ class ExpendedoraGUI:
                 self.entry_devolucion.focus_set()  # <-- AÑADIR ESTO
                 return
 
-            # Actualización optimista
-            current_fichas = self.contadores["fichas_restantes"]
-            self.contadores_labels["fichas_restantes"].config(text=f"{current_fichas + cantidad_fichas}")
-
-            shared_buffer.gui_to_core_queue.put({'type': 'add_fichas', 'cantidad': cantidad_fichas})
+            self._cargar_fichas_en_buffer(cantidad_fichas)
 
             # Actualizar contadores de devolución
             self.contadores["fichas_devolucion"] += cantidad_fichas
-            self.contadores_apertura["fichas_devolucion"] += cantidad_fichas
-            self.contadores_parciales["fichas_devolucion"] += cantidad_fichas
+            self.contadores_parcial["fichas_devolucion"] += cantidad_fichas
 
-            self.guardar_configuracion()
+            self._persistir_estado_critico("devolucion_fichas")
             
             if "fichas_devolucion" in self.contadores_labels:
                 self.contadores_labels["fichas_devolucion"].config(text=f"{self.contadores['fichas_devolucion']}")
@@ -2490,18 +2839,13 @@ class ExpendedoraGUI:
                 self.entry_cambio.focus_set()
                 return
 
-            # Actualización optimista
-            current_fichas = self.contadores["fichas_restantes"]
-            self.contadores_labels["fichas_restantes"].config(text=f"{current_fichas + cantidad_fichas}")
-
-            shared_buffer.gui_to_core_queue.put({'type': 'add_fichas', 'cantidad': cantidad_fichas})
+            self._cargar_fichas_en_buffer(cantidad_fichas)
 
             # Actualizar contadores de cambio
             self.contadores["fichas_cambio"] += cantidad_fichas
-            self.contadores_apertura["fichas_cambio"] += cantidad_fichas
-            self.contadores_parciales["fichas_cambio"] += cantidad_fichas
+            self.contadores_parcial["fichas_cambio"] += cantidad_fichas
 
-            self.guardar_configuracion()
+            self._persistir_estado_critico("cambio_fichas")
             
             if "fichas_cambio" in self.contadores_labels:
                 self.contadores_labels["fichas_cambio"].config(text=f"{self.contadores['fichas_cambio']}")
@@ -2515,30 +2859,30 @@ class ExpendedoraGUI:
 
     def realizar_apertura(self):
         # Inicia la apertura del día
-        self.contadores_apertura["device_id"] = self.device_id
-        
         # Insertar cierre inicial con todo en 0 para registrar el día
         cierre_inicial = self.session_service.build_daily_close(
             self.device_id,
-            self.contadores_apertura,
+            self.contadores_global,
             event_type="apertura",
         )
         
         # Enviar cierre inicial al servidor remoto y local (no bloquea la GUI)
-        _post_en_hilo(DNS + urlCierresCloud, cierre_inicial, "Apertura remota")
-        _post_en_hilo(DNSLocal + urlCierresLocal, cierre_inicial, "Apertura local")
+        self._post_backend_event(
+            local_path=urlCierresLocal,
+            cloud_path=urlCierresCloud,
+            payload=cierre_inicial,
+            descripcion="Apertura",
+        )
 
         self.operacion_config["ultima_apertura_fecha"] = datetime.now().strftime("%Y-%m-%d")
         
         self.actualizar_contadores_gui()
-        self.guardar_configuracion(inmediato=True)
+        self._persistir_estado_critico("apertura_dia")
         messagebox.showinfo("Apertura", "Apertura del día realizada con éxito.\nRegistro inicial creado en el sistema.")
 
     def realizar_cierre(self):
         # Realiza el cierre del día
-        cierre_info = self.session_service.build_daily_close(self.device_id, self.contadores_apertura)
-        # Actualizamos el device_id en el diccionario existente en lugar de recrearlo
-        self.contadores_apertura["device_id"] = self.device_id
+        cierre_info = self.session_service.build_daily_close(self.device_id, self.contadores_global)
         mensaje_cierre = (
             f"Fichas expendidas: {cierre_info['fichas_expendidas']}\n"
             f"Dinero ingresado: ${cierre_info['dinero_ingresado']:.2f}\n"
@@ -2551,16 +2895,20 @@ class ExpendedoraGUI:
         messagebox.showinfo("Cierre", f"Cierre del día realizado:\n{mensaje_cierre}")
         
         # Enviar datos al servidor (no bloquea la GUI)
-        _post_en_hilo(DNS + urlCierresCloud, cierre_info, "Cierre remoto")
-        _post_en_hilo(DNSLocal + urlCierresLocal, cierre_info, "Cierre local")
+        self._post_backend_event(
+            local_path=urlCierresLocal,
+            cloud_path=urlCierresCloud,
+            payload=cierre_info,
+            descripcion="Cierre",
+        )
         
         # IMPORTANTE: Guardar los contadores parciales ANTES de resetear
         # para que el subcierre tenga los datos correctos
-        self.contadores_parciales_pre_cierre = self.contadores_parciales.copy()
-        
-        self.contadores = self.counter_service.default_counters()
-        self.contadores_apertura = self.counter_service.default_counters()
-        self.contadores_parciales = self.counter_service.default_counters()
+        self.contadores_parciales_pre_cierre = self.contadores_parcial.copy()
+
+        self.contadores_global = self.counter_service.default_counters()
+        self.contadores_parcial = self.counter_service.default_counters()
+        self._sync_counter_aliases()
         
         # Ajustar bases para que coincidan con el reset (Base = 0 - HW_Actual)
         hw_actual = shared_buffer.get_fichas_expendidas()
@@ -2571,13 +2919,13 @@ class ExpendedoraGUI:
         # Marcar que se realizó un cierre para evitar doble reporte en cerrar_sesion
         self.cierre_realizado = True
         
-        self.guardar_configuracion(inmediato=True)
+        self._persistir_estado_critico("cierre_dia")
 
     def realizar_cierre_parcial(self):
         # Realiza el cierre parcial
         subcierre_info = self.session_service.build_partial_close(
             self.device_id,
-            self.contadores_parciales,
+            self.contadores_parcial,
             self.username,
             cashier_id=self.cashier_id,
         )
@@ -2594,22 +2942,23 @@ class ExpendedoraGUI:
         messagebox.showinfo("Cierre Parcial", f"Cierre parcial realizado:\n{mensaje_subcierre}")
 
         # Enviar datos al servidor (no bloquea la GUI)
-        _post_en_hilo(
-            DNS + urlSubcierreCloud,
-            subcierre_info,
-            "Subcierre remoto",
+        self._post_backend_event(
+            local_path=urlSubcierreLocal,
+            cloud_path=urlSubcierreCloud,
+            payload=subcierre_info,
+            descripcion="Subcierre",
             retry_without_cashier_id=True,
         )
-        _post_en_hilo(DNSLocal + urlSubcierreLocal, subcierre_info, "Subcierre local")
 
         # Reiniciar los contadores parciales
-        self.contadores_parciales = self.counter_service.default_counters()
+        self.contadores_parcial = self.counter_service.default_counters()
+        self._sync_counter_aliases()
         
         # Ajustar base parcial
         hw_actual = shared_buffer.get_fichas_expendidas()
         self.inicio_parcial_fichas = -hw_actual
         
-        self.guardar_configuracion(inmediato=True)
+        self._persistir_estado_critico("cierre_parcial")
 
     def _cancel_after(self, attr_name):
         after_id = getattr(self, attr_name, None)
@@ -2626,12 +2975,16 @@ class ExpendedoraGUI:
             return
         self._is_shutting_down = True
         try:
+            self._persistir_estado_critico("shutdown")
+            self.guardar_configuracion(inmediato=True)
+        except Exception as exc:
+            print(f"[GUI] Aviso persistiendo al cerrar: {exc}")
+        try:
             self.network_service.stop()
         except Exception:
             pass
         self._cancel_after("_after_id")
         self._cancel_after("_after_fast_status_id")
-        self._cancel_after("_auto_calib_after_id")
         self._after_sincronizar_pendiente = False
         if destroy_root:
             try:
@@ -2661,7 +3014,7 @@ class ExpendedoraGUI:
                 })
                 print("[GUI] Usando contadores pre-cierre para subcierre")
             else:
-                contadores_a_enviar = self.contadores_parciales
+                contadores_a_enviar = self.contadores_parcial
                 print("[GUI] Usando contadores parciales actuales para subcierre")
 
             # Best-effort: no bloquear logout si falla remoto/local.
@@ -2672,26 +3025,33 @@ class ExpendedoraGUI:
                     self.username,
                     cashier_id=self.cashier_id,
                 )
-                _post_en_hilo(
-                    DNS + urlSubcierreCloud,
-                    subcierre_info,
-                    "Cierre sesion remoto",
+                self._post_backend_event(
+                    local_path=urlSubcierreLocal,
+                    cloud_path=urlSubcierreCloud,
+                    payload=subcierre_info,
+                    descripcion="Cierre sesion",
                     retry_without_cashier_id=True,
                 )
-                _post_en_hilo(DNSLocal + urlSubcierreLocal, subcierre_info, "Cierre sesion local")
             except Exception as exc:
                 print(f"[GUI] Aviso: no se pudo generar/enviar subcierre en logout: {exc}")
 
-            self.contadores = self.counter_service.default_counters()
-            self.contadores_parciales = self.counter_service.default_counters()
+            self.contadores_global = self.counter_service.default_counters()
+            self.contadores_parcial = self.counter_service.default_counters()
+            self._sync_counter_aliases()
             try:
                 shared_buffer.reset_fichas_expendidas_sesion()
                 shared_buffer.set_fichas_expendidas(0)
+                shared_buffer.set_r_cuenta(0)
+                shared_buffer.set_cuenta(0)
+                hw_actual = shared_buffer.get_fichas_expendidas_total()
+                self.inicio_fichas_expendidas = -hw_actual
+                self.inicio_apertura_fichas = -hw_actual
+                self.inicio_parcial_fichas = -hw_actual
             except Exception as exc:
                 print(f"[GUI] Aviso reseteando buffer de sesión: {exc}")
             try:
                 self.actualizar_contadores_gui()
-                self.guardar_configuracion(inmediato=True)
+                self._persistir_estado_critico("cerrar_sesion")
             except Exception as exc:
                 print(f"[GUI] Aviso guardando estado de sesión: {exc}")
 
@@ -2729,33 +3089,42 @@ class ExpendedoraGUI:
         self.simular_salida_fichas()
         
     def simular_salida_fichas(self):
-        """Simula una interrupción del sensor (BCM de la tolva seleccionada)."""
+        """Simula un pulso de sensor (MCU o fallback local si no hay serial)."""
         try:
-            self.core.simulate_sensor_pulse()
-        except Exception as e:
-            messagebox.showerror("Simulación", f"No se pudo simular el sensor:\n{e}")
+            if self.core.simulate_sensor_pulse():
+                return
+            messagebox.showwarning(
+                "Simulación",
+                "No hay fichas pendientes. Cargá fichas con Expender antes de simular.",
+            )
+        except Exception as exc:
+            messagebox.showerror("Simulación", f"No se pudo simular la salida:\n{exc}")
             
     def simular_promo(self, promo):
         # Enviar comando al core via buffer compartido
         fichas = self.promociones[promo]["fichas"]
         promo_num = int(promo.split()[1])
         shared_buffer.gui_to_core_queue.put({'type': 'promo', 'promo_num': promo_num, 'fichas': fichas})
+        shared_buffer.process_gui_commands()
+        restantes = int(shared_buffer.get_fichas_restantes())
+        self.contadores["fichas_restantes"] = restantes
+        label = self.contadores_labels.get("fichas_restantes")
+        if label is not None:
+            label.config(text=f"{restantes}")
 
         # Aumentar el dinero ingresado según el precio de la promoción
         precio = self.promociones[promo]["precio"]
         self.contadores["dinero_ingresado"] += precio
-        self.contadores_apertura["dinero_ingresado"] += precio
-        self.contadores_parciales["dinero_ingresado"] += precio
+        self.contadores_parcial["dinero_ingresado"] += precio
 
         # Registrar fichas de promoción
         self.contadores["fichas_promocion"] += fichas
-        self.contadores_apertura["fichas_promocion"] += fichas
-        self.contadores_parciales["fichas_promocion"] += fichas
+        self.contadores_parcial["fichas_promocion"] += fichas
 
         self.contadores_labels["dinero_ingresado"].config(text=f"${self.contadores['dinero_ingresado']:.2f}")
 
         # **SOLUCIÓN**: Actualizar el buffer compartido para que el core lo vea
-        shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"])
+        shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"], immediate=False)
 
         # Diccionario para simular el switch
         promo_contadores = {
@@ -2767,15 +3136,14 @@ class ExpendedoraGUI:
         # Incrementar el contador de la promoción correspondiente
         if promo in promo_contadores:
             self.contadores[promo_contadores[promo]] += 1
-            self.contadores_apertura[promo_contadores[promo]] += 1
-            self.contadores_parciales[promo_contadores[promo]] += 1
+            self.contadores_parcial[promo_contadores[promo]] += 1
             # Estos labels fueron diseñados para mostrar solo el valor numérico.
             self.contadores_labels[promo_contadores[promo]].config(text=f"{self.contadores[promo_contadores[promo]]}")
         else:
             messagebox.showerror("Error", "Promoción no válida.")
 
         self.actualizar_contadores_gui()
-        self.guardar_configuracion(inmediato=True)
+        self._persistir_estado_critico("promo")
         
     def actualizar_fecha_hora(self):
         # Obtener la fecha y hora actual

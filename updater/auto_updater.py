@@ -56,7 +56,18 @@ def load_updater_settings() -> dict:
         "requirements_file": str(cfg.get("requirements_file", "requirements.txt")),
         "restart_command_linux": str(cfg.get("restart_command_linux", "")),
         "restart_command_windows": str(cfg.get("restart_command_windows", "")),
-        "preserve_files": list(cfg.get("preserve_files", ["config.json", "registro.json", "buffer_state.json"])),
+        "preserve_files": list(
+            cfg.get(
+                "preserve_files",
+                [
+                    "config.json",
+                    "registro.json",
+                    "buffer_state.json",
+                    "machine_state.json",
+                    "machine_state.json.bak",
+                ],
+            )
+        ),
     }
 
 

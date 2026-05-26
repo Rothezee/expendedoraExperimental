@@ -23,11 +23,15 @@ class ConfigRepositoryTest(unittest.TestCase):
         self.assertIn("production", normalized["mysql"])
         self.assertEqual(normalized["mysql"]["active"], "local")
         self.assertIn("hoppers", normalized["maquina"])
-        self.assertEqual(len(normalized["maquina"]["hoppers"]), 3)
+        self.assertEqual(len(normalized["maquina"]["hoppers"]), 1)
+        self.assertEqual(normalized["maquina"]["hoppers"][0]["nombre"], "Tolva 1")
         self.assertIn("atajos", normalized)
         self.assertIn("promociones", normalized["atajos"])
         self.assertIn("Promo 1", normalized["atajos"]["promociones"])
         self.assertIn("calibracion", normalized["maquina"]["hoppers"][0])
+        self.assertIn("hardware", normalized)
+        self.assertEqual(normalized["hardware"]["backend"], "esp32_serial")
+        self.assertIn("esp32", normalized["hardware"])
 
     def test_save_and_load_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -41,11 +45,11 @@ class ConfigRepositoryTest(unittest.TestCase):
             self.assertIn("network_manager", loaded)
             self.assertIn("check_interval_s", loaded["network_manager"])
             self.assertIn("local", loaded["mysql"])
-            self.assertEqual(len(loaded["maquina"]["hoppers"]), 3)
+            self.assertEqual(len(loaded["maquina"]["hoppers"]), 1)
             self.assertIn("atajos", loaded)
             self.assertIn("promociones", loaded["atajos"])
             self.assertIn("Promo 2", loaded["atajos"]["promociones"])
-            self.assertIn("calibracion", loaded["maquina"]["hoppers"][1])
+            self.assertIn("calibracion", loaded["maquina"]["hoppers"][0])
 
     def test_normalize_mysql_null_password_no_string_none(self):
         repo = ConfigRepository("config.json")
@@ -88,6 +92,41 @@ class ConfigRepositoryTest(unittest.TestCase):
         self.assertEqual(targets[0]["host"], "127.0.0.1")
         self.assertEqual(targets[0]["port"], 3307)
         self.assertEqual(targets[0]["database"], "legacy_db")
+
+    def test_normalize_migrates_legacy_counter_keys_to_two_domains(self):
+        repo = ConfigRepository("config.json")
+        normalized = repo.normalize(
+            {
+                "contadores": {"fichas_expendidas": 3, "dinero_ingresado": 1000.0},
+                "contadores_apertura": {"fichas_expendidas": 7, "dinero_ingresado": 2000.0},
+                "contadores_parciales": {"fichas_expendidas": 2, "dinero_ingresado": 500.0},
+            }
+        )
+        self.assertIn("contadores_global", normalized)
+        self.assertIn("contadores_parcial", normalized)
+        self.assertNotIn("contadores", normalized)
+        self.assertNotIn("contadores_apertura", normalized)
+        self.assertNotIn("contadores_parciales", normalized)
+        self.assertEqual(normalized["contadores_global"]["fichas_expendidas"], 7)
+        self.assertEqual(normalized["contadores_parcial"]["fichas_expendidas"], 2)
+
+    def test_normalize_shortcuts_respects_explicit_empty_lists(self):
+        repo = ConfigRepository("config.json")
+        normalized = repo.normalize(
+            {
+                "atajos": {
+                    "promociones": {
+                        "Promo 1": [],
+                        "Promo 2": ["<KP_Multiply>"],
+                        "Promo 3": [],
+                    }
+                }
+            }
+        )
+        promos = normalized["atajos"]["promociones"]
+        self.assertEqual(promos["Promo 1"], [])
+        self.assertEqual(promos["Promo 2"], ["<KP_Multiply>"])
+        self.assertEqual(promos["Promo 3"], [])
 
 
 if __name__ == "__main__":

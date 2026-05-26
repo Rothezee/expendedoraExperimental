@@ -63,12 +63,12 @@ class ReportRepositoryMySQL:
                     resolved_device = self._resolve_device_id(cursor, device_id)
                     if resolved_device is None and str(device_id).strip() and (not str(device_id).strip().isdigit()):
                         # Si se pidió por codigo_hardware y este target no lo conoce,
-                        # probamos el siguiente target en vez de devolver filas ambiguas.
+                        # no descartamos el target: devolvemos datos sin filtro para
+                        # mantener la vista de reportes operativa.
                         print(
                             f"[REPORTES] {table}: device '{device_id}' no resuelto en {target_label}, "
-                            "probando siguiente target."
+                            "consultando sin filtro por id_dispositivo."
                         )
-                        continue
                     if resolved_device is not None:
                         sql += " WHERE id_dispositivo = %s"
                         params.append(resolved_device)

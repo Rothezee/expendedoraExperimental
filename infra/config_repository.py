@@ -2,6 +2,9 @@ import json
 import os
 from typing import Any, Dict
 
+from infra.machine_limits import MAX_MACHINE_HOPPERS
+from services.counter_service import CounterService
+
 
 DEFAULT_API_BASE_URLS = ["http://127.0.0.1", "https://app.maquinasbonus.com"]
 DEFAULT_API_ENDPOINT = "AdministrationPanel/src/devices/api_receptor.php"
@@ -20,9 +23,15 @@ DEFAULT_MYSQL_CONFIG = {
     "database": "sistemadeadministracion",
 }
 DEFAULT_HOPPERS = [
-    {"id": 1, "nombre": "Tolva 1", "motor_pin": 2, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
-    {"id": 2, "nombre": "Tolva 2", "motor_pin": 2, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
-    {"id": 3, "nombre": "Tolva 3", "motor_pin": 2, "motor_pin_rev": None, "motor_active_low": True, "sensor_pin": 4, "sensor_bouncetime_ms": 8},
+    {
+        "id": 1,
+        "nombre": "Tolva 1",
+        "motor_pin": 13,
+        "motor_pin_rev": 11,
+        "motor_active_low": True,
+        "sensor_pin": 9,
+        "sensor_bouncetime_ms": 8,
+    },
 ]
 DEFAULT_HOPPER_CALIBRATION = {
     "pulso_min_s": 0.05,
@@ -60,7 +69,13 @@ DEFAULT_UPDATER_CONFIG = {
     "requirements_file": "requirements.txt",
     "restart_command_linux": "",
     "restart_command_windows": "",
-    "preserve_files": ["config.json", "registro.json", "buffer_state.json"],
+    "preserve_files": [
+        "config.json",
+        "registro.json",
+        "buffer_state.json",
+        "machine_state.json",
+        "machine_state.json.bak",
+    ],
 }
 DEFAULT_NETWORK_MANAGER_CONFIG = {
     "enabled": True,
@@ -72,6 +87,17 @@ DEFAULT_NETWORK_MANAGER_CONFIG = {
     "preferred_interface": "",
     "wifi_ssid": "",
     "wifi_password": "",
+}
+DEFAULT_HARDWARE_CONFIG = {
+    "backend": "esp32_serial",
+    "esp32": {
+        "port": "",
+        "baud": 115200,
+        "auto_detect": True,
+        "connect_timeout_s": 3,
+        "command_timeout_ms": 500,
+        "debug_motor_sensor": True,
+    },
 }
 
 
@@ -270,10 +296,10 @@ class ConfigRepository:
         if not isinstance(hoppers, list) or not hoppers:
             hoppers = list(DEFAULT_HOPPERS)
         normalized_hoppers = []
-        for idx, hopper in enumerate(hoppers[:3], start=1):
+        for idx, hopper in enumerate(hoppers[:MAX_MACHINE_HOPPERS], start=1):
             if not isinstance(hopper, dict):
                 hopper = {}
-            fallback = DEFAULT_HOPPERS[idx - 1] if idx - 1 < len(DEFAULT_HOPPERS) else DEFAULT_HOPPERS[0]
+            fallback = DEFAULT_HOPPERS[(idx - 1) % len(DEFAULT_HOPPERS)]
             raw_calib = hopper.get("calibracion", {})
             if not isinstance(raw_calib, dict):
                 raw_calib = {}
@@ -317,24 +343,6 @@ class ConfigRepository:
             calib = normalized_hoppers[-1]["calibracion"]
             if calib["pulso_max_s"] < calib["pulso_min_s"]:
                 calib["pulso_max_s"] = calib["pulso_min_s"]
-        while len(normalized_hoppers) < 3:
-            fallback = DEFAULT_HOPPERS[len(normalized_hoppers)]
-            normalized_hoppers.append(
-                {
-                    "id": fallback["id"],
-                    "nombre": fallback["nombre"],
-                    "motor_pin": fallback["motor_pin"],
-                    "motor_pin_rev": fallback.get("motor_pin_rev"),
-                    "motor_active_low": bool(fallback.get("motor_active_low", True)),
-                    "sensor_pin": fallback["sensor_pin"],
-                    "sensor_bouncetime_ms": self._safe_int(
-                        fallback.get("sensor_bouncetime_ms", sensor_interrupts_cfg["bouncetime_ms"]),
-                        sensor_interrupts_cfg["bouncetime_ms"],
-                        minimum=0,
-                    ),
-                    "calibracion": dict(DEFAULT_HOPPER_CALIBRATION),
-                }
-            )
 
         atajos = config.get("atajos", {})
         if not isinstance(atajos, dict):
@@ -345,6 +353,7 @@ class ConfigRepository:
         normalized_hotkeys = {}
         for promo_name, default_keys in DEFAULT_PROMO_HOTKEYS.items():
             keys = promo_hotkeys.get(promo_name, default_keys)
+            keys_is_list = isinstance(keys, list)
             if isinstance(keys, str):
                 keys = [keys]
             if not isinstance(keys, list):
@@ -354,7 +363,8 @@ class ConfigRepository:
                 key_str = str(key).strip()
                 if key_str and key_str not in clean_keys:
                     clean_keys.append(key_str)
-            if not clean_keys:
+            # Respetar listas vacías explícitas (promo sin atajos).
+            if not clean_keys and not keys_is_list:
                 clean_keys = list(default_keys)
             normalized_hotkeys[promo_name] = clean_keys
 
@@ -490,6 +500,43 @@ class ConfigRepository:
         merged["mysql"] = mysql_cfg
         merged["updater"] = updater_cfg
         merged["network_manager"] = network_manager_cfg
+        hardware = config.get("hardware", {})
+        if not isinstance(hardware, dict):
+            hardware = {}
+        esp32 = hardware.get("esp32", {})
+        if not isinstance(esp32, dict):
+            esp32 = {}
+        backend_raw = str(hardware.get("backend", DEFAULT_HARDWARE_CONFIG["backend"])).strip().lower()
+        if backend_raw != "esp32_serial":
+            backend_raw = DEFAULT_HARDWARE_CONFIG["backend"]
+        hardware_cfg = {
+            "backend": backend_raw,
+            "esp32": {
+                "port": str(esp32.get("port", DEFAULT_HARDWARE_CONFIG["esp32"]["port"])),
+                "baud": self._safe_int(esp32.get("baud", DEFAULT_HARDWARE_CONFIG["esp32"]["baud"]), 115200, minimum=9600),
+                "auto_detect": bool(esp32.get("auto_detect", DEFAULT_HARDWARE_CONFIG["esp32"]["auto_detect"])),
+                "connect_timeout_s": self._safe_float(
+                    esp32.get("connect_timeout_s", DEFAULT_HARDWARE_CONFIG["esp32"]["connect_timeout_s"]),
+                    float(DEFAULT_HARDWARE_CONFIG["esp32"]["connect_timeout_s"]),
+                    minimum=0.5,
+                ),
+                "command_timeout_ms": self._safe_int(
+                    esp32.get("command_timeout_ms", DEFAULT_HARDWARE_CONFIG["esp32"]["command_timeout_ms"]),
+                    int(DEFAULT_HARDWARE_CONFIG["esp32"]["command_timeout_ms"]),
+                    minimum=100,
+                ),
+                "debug_motor_sensor": bool(
+                    esp32.get("debug_motor_sensor", DEFAULT_HARDWARE_CONFIG["esp32"]["debug_motor_sensor"])
+                ),
+            },
+        }
+        merged["hardware"] = hardware_cfg
+        cnt_global, cnt_partial = CounterService.normalize_counter_domains(config)
+        merged["contadores_global"] = cnt_global
+        merged["contadores_parcial"] = cnt_partial
+        merged.pop("contadores", None)
+        merged.pop("contadores_apertura", None)
+        merged.pop("contadores_parciales", None)
         merged["device_id"] = codigo_hardware
         return merged
 
@@ -501,8 +548,9 @@ class ConfigRepository:
         return self.normalize({"promociones": {}, "valor_ficha": 1.0})
 
     def save(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        from infra.state_store import atomic_write_json
+
         normalized = self.normalize(config)
-        with open(self.config_path, "w", encoding="utf-8") as file_obj:
-            json.dump(normalized, file_obj, indent=4)
+        atomic_write_json(self.config_path, normalized)
         return normalized
 
