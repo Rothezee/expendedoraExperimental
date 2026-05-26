@@ -226,6 +226,9 @@ expendedoraExperimental/
 ├── registro.json           # Registro de ventas y operaciones.
 ├── tests/                  # Pruebas unitarias y smoke tests.
 ├── configSO/               # Scripts para configurar el SO (modo kiosk).
+│   ├── install_cajero_kiosk.sh      # Linux / Raspberry
+│   ├── windows/                     # Windows 11 Mini PC
+│   │   └── install_cajero_kiosk.ps1
 │   ├── crear_usuario_cajero.sh
 │   └── restricciones_cajero.sh
 └── Notas/                  # Documentación detallada del proyecto.
