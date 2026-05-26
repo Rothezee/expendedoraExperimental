@@ -33,6 +33,10 @@ def cmd_hello() -> Dict[str, Any]:
     return {"dir": "cmd", "type": "HELLO", "v": PROTOCOL_VERSION}
 
 
+def cmd_dict() -> Dict[str, Any]:
+    return {"dir": "cmd", "type": "DICT", "v": PROTOCOL_VERSION}
+
+
 def cmd_ping() -> Dict[str, Any]:
     return {"dir": "cmd", "type": "PING"}
 
@@ -58,6 +62,21 @@ def cmd_config(
     }
     if destrabe is not None:
         payload["destrabe"] = destrabe
+    if debug:
+        payload["debug"] = True
+    return payload
+
+
+def cmd_config_destrabe(
+    destrabe: Dict[str, Any],
+    *,
+    debug: bool = False,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "dir": "cmd",
+        "type": "CONFIG",
+        "destrabe": destrabe,
+    }
     if debug:
         payload["debug"] = True
     return payload
@@ -103,11 +122,10 @@ def hopper_from_tolva(tolva: Dict[str, Any]) -> Dict[str, Any]:
     rev = tolva.get("motor_pin_rev")
     return {
         "id": int(tolva.get("id", 1)),
-        "nombre": str(tolva.get("nombre", "Tolva 1")),
-        "motor_pin": int(tolva.get("motor_pin", 13)),
+        "motor_pin": int(tolva.get("motor_pin", 12)),
         "motor_pin_rev": int(rev) if rev is not None and str(rev).strip() != "" else None,
         "motor_active_low": bool(tolva.get("motor_active_low", True)),
-        "sensor_pin": int(tolva.get("sensor_pin", 9)),
+        "sensor_pin": int(tolva.get("sensor_pin", 8)),
         "sensor_bouncetime_ms": int(tolva.get("sensor_bouncetime_ms", 8)),
         "calibracion": {
             "pulso_min_s": float(cal.get("pulso_min_s", 0.05)),

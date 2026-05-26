@@ -24,7 +24,7 @@ class Esp32Bridge:
         self._running = False
         self._dispense_armed = False
         self._last_token_ts = 0.0
-        self._token_debounce_s = 0.25
+        self._token_debounce_s = 0.22
         self._last_dbg_omit_ts = 0.0
         self._config_repo = ConfigRepository(getattr(core_module, "config_file", "config.json"))
         self._debug_cfg: Dict[str, Any] = {}
@@ -34,6 +34,9 @@ class Esp32Bridge:
         self._sim_unjam_attempts = 0
         self._sim_last_remaining = -1
         self._last_reported_session_fichas = 0
+        self._reconnect_backoff_s = 5.0
+        self._config_applied = False
+        self._last_config_attempt_ts = 0.0
 
     def _dbg(self, category: str, message: str) -> None:
         dbg_log(self._debug_cfg, category, message)
@@ -45,9 +48,50 @@ class Esp32Bridge:
     def is_ready(self) -> bool:
         return self._backend is not None and self._backend.is_connected()
 
+    def _ensure_config_applied(self, *, force: bool = False) -> bool:
+        if not self._backend or not self._backend.is_connected():
+            self._config_applied = False
+            return False
+        now = time.time()
+        if not force and self._config_applied:
+            return True
+        if not force and (now - self._last_config_attempt_ts) < 1.0:
+            return False
+        self._last_config_attempt_ts = now
+        config = self._config_repo.load()
+        tolva = self._active_tolva(config)
+        destrabe = destrabe_from_config(config, tolva)
+        with self._core._tolvas_lock:
+            all_tolvas = [dict(t) for t in self._core._tolvas]
+        hoppers = [hopper_from_tolva(t) for t in all_tolvas]
+        ok = False
+        if len(hoppers) > 1 and hasattr(self._backend, "configure_hoppers"):
+            ok = self._backend.configure_hoppers(hoppers, destrabe)
+            if not ok:
+                print("[ESP32 BRIDGE] CONFIG (multi) falló")
+        else:
+            ok = self._backend.configure_hopper(hopper_from_tolva(tolva), destrabe)
+            if not ok:
+                print("[ESP32 BRIDGE] CONFIG falló")
+        if ok:
+            hopper_id = int(hopper_from_tolva(tolva).get("id", 1))
+            self._backend.select_hopper(hopper_id)
+            self._last_hopper_id = hopper_id
+            self._config_applied = True
+            self._dbg("CONFIG", f"CONFIG aplicada OK (tolva={hopper_id})")
+            return True
+        self._config_applied = False
+        return False
+
     def start(self) -> bool:
         config = self._config_repo.load()
         self._debug_cfg = config
+        try:
+            hw = config.get("hardware", {}) if isinstance(config.get("hardware", {}), dict) else {}
+            esp = hw.get("esp32", {}) if isinstance(hw.get("esp32", {}), dict) else {}
+            self._token_debounce_s = max(0.08, float(esp.get("token_debounce_s", 0.22)))
+        except Exception:
+            self._token_debounce_s = 0.22
         if self._backend is None:
             self._backend = Esp32SerialBackend(config)
         if self._backend.is_connected():
@@ -55,19 +99,7 @@ class Esp32Bridge:
         if not self._backend.connect():
             return False
         tolva = self._active_tolva(config)
-        destrabe = destrabe_from_config(config, tolva)
-        with self._core._tolvas_lock:
-            all_tolvas = [dict(t) for t in self._core._tolvas]
-        hoppers = [hopper_from_tolva(t) for t in all_tolvas]
-        if len(hoppers) > 1 and hasattr(self._backend, "configure_hoppers"):
-            if not self._backend.configure_hoppers(hoppers, destrabe):
-                print("[ESP32 BRIDGE] CONFIG (multi) falló")
-                return False
-        else:
-            hopper = hopper_from_tolva(tolva)
-            if not self._backend.configure_hopper(hopper, destrabe):
-                print("[ESP32 BRIDGE] CONFIG falló")
-                return False
+        self._ensure_config_applied(force=True)
         hopper_cfg = hopper_from_tolva(tolva)
         hopper_id = int(hopper_cfg.get("id", 1))
         self._dbg(
@@ -76,20 +108,24 @@ class Esp32Bridge:
             f"rev_pin={hopper_cfg.get('motor_pin_rev')} sensor_pin={hopper_cfg.get('sensor_pin')} "
             f"active_low={hopper_cfg.get('motor_active_low')}",
         )
-        self._backend.select_hopper(hopper_id)
-        self._last_hopper_id = hopper_id
-        # Asegurar motor apagado hasta que el operador cargue fichas (add_fichas/promo).
-        self._dispense_armed = False
+        # Armado deriva de fichas pendientes: remaining>0 implica ciclo activo.
+        self._dispense_armed = int(shared_buffer.get_fichas_restantes()) > 0
         try:
-            self._backend.stop()
-            self._dbg("MOTOR", "STOP enviado al conectar (motor apagado)")
+            if self._dispense_armed:
+                remaining = int(shared_buffer.get_fichas_restantes())
+                self._backend.set_target(remaining)
+                self._dbg("MOTOR", f"Reconexión: SET_TARGET inmediato -> {remaining}")
+            else:
+                self._backend.stop()
+                self._dbg("MOTOR", "STOP enviado al conectar (motor apagado)")
         except Exception as exc:
-            self._dbg("MOTOR", f"STOP falló: {exc}")
-        self._last_sent_target = 0
+            self._dbg("MOTOR", f"Sincronización inicial falló: {exc}")
+        self._last_sent_target = int(shared_buffer.get_fichas_restantes())
         self._drain_events()
         self._running = True
         self._dbg("BRIDGE", "Conectado; dispensa desarmada hasta cargar fichas")
         print("[ESP32 BRIDGE] Conectado; motor en espera hasta cargar fichas")
+        self._reconnect_backoff_s = 5.0
         return True
 
     def stop(self) -> None:
@@ -108,16 +144,23 @@ class Esp32Bridge:
         # y simulación offline (UI/motor lógico).
         self._running = True
         print("[ESP32 BRIDGE] Iniciando loop de puente serial")
-        reconnect_at = 0.0
+        reconnect_at = time.time()
         while self._running:
             try:
                 if self._backend is None or not self._backend.is_connected():
                     now = time.time()
                     if now >= reconnect_at:
-                        reconnect_at = now + 5.0
                         print("[ESP32 BRIDGE] Reintentando conexión...")
                         if self.start():
                             print("[ESP32 BRIDGE] Reconectado")
+                            reconnect_at = 0.0
+                        else:
+                            self._reconnect_backoff_s = min(30.0, self._reconnect_backoff_s + 5.0)
+                            reconnect_at = time.time() + self._reconnect_backoff_s
+                            print(
+                                f"[ESP32 BRIDGE] Próximo reintento en "
+                                f"{self._reconnect_backoff_s:.1f}s"
+                            )
                 self._loop_iteration()
             except Exception as exc:
                 print(f"[ESP32 BRIDGE ERROR] {type(exc).__name__}: {exc}")
@@ -146,6 +189,7 @@ class Esp32Bridge:
             else:
                 self._set_motor_ui_state(False, "detenido")
         self._handle_destrabe_request()
+        self._ensure_config_applied()
         self._simulate_motor_cycle_offline()
         self._sync_target_to_mcu()
         self._sync_hopper_selection()
@@ -163,7 +207,7 @@ class Esp32Bridge:
             hoppers = config.get("maquina", {}).get("hoppers", [])
             if isinstance(hoppers, list) and hoppers:
                 return dict(hoppers[0])
-            return {"id": 1, "motor_pin": 13, "motor_pin_rev": 11, "sensor_pin": 9}
+            return {"id": 1, "motor_pin": 12, "motor_pin_rev": 10, "sensor_pin": 8}
         if 0 <= idx < len(tolvas):
             return dict(tolvas[idx])
         return dict(tolvas[0])
@@ -276,16 +320,26 @@ class Esp32Bridge:
         if not self._backend or not self._backend.is_connected():
             return
         if self._core.bloqueo_emergencia:
-            return
-        remaining = int(shared_buffer.get_fichas_restantes())
-        if not self._dispense_armed and remaining > 0:
             now = time.time()
             if now - self._last_dbg_omit_ts >= 2.0:
                 self._last_dbg_omit_ts = now
-                self._dbg("MOTOR", f"SET_TARGET omitido (no armado) remaining={remaining}")
+                self._dbg("MOTOR", "SET_TARGET omitido (bloqueo_emergencia=ON)")
             return
+        remaining = int(shared_buffer.get_fichas_restantes())
+        if not self._config_applied:
+            if remaining > 0:
+                now = time.time()
+                if now - self._last_dbg_omit_ts >= 2.0:
+                    self._last_dbg_omit_ts = now
+                    self._dbg("MOTOR", "SET_TARGET omitido (CONFIG pendiente)")
+            return
+        self._dispense_armed = remaining > 0
         if remaining != self._last_sent_target:
-            self._dbg("MOTOR", f"SET_TARGET {self._last_sent_target} → {remaining} armed={self._dispense_armed}")
+            self._dbg(
+                "MOTOR",
+                f"SET_TARGET {self._last_sent_target} → {remaining} "
+                f"(remaining>0 => active={remaining > 0})",
+            )
             ok = self._backend.set_target(remaining)
             if ok:
                 self._last_sent_target = remaining
@@ -295,6 +349,8 @@ class Esp32Bridge:
                     self._dispense_armed = False
                     self._dbg("MOTOR", "Target=0 → desarmado")
                     self._set_motor_ui_state(False, "detenido")
+            else:
+                self._dbg("MOTOR", f"SET_TARGET {remaining} falló (backend rechazó comando)")
 
     def _sync_hopper_selection(self) -> None:
         if not self._backend:
@@ -309,7 +365,9 @@ class Esp32Bridge:
             self._backend.select_hopper(hopper_id)
             config = self._config_repo.load()
             tolva = dict(tolvas[idx])
-            self._backend.configure_hopper(hopper_from_tolva(tolva), destrabe_from_config(config, tolva))
+            self._config_applied = self._backend.configure_hopper(
+                hopper_from_tolva(tolva), destrabe_from_config(config, tolva)
+            )
             self._last_hopper_id = hopper_id
 
     def _active_hopper_id(self) -> int:
@@ -404,46 +462,79 @@ class Esp32Bridge:
             return
         if etype == "TOKEN":
             now = time.time()
-            if now - self._last_token_ts < self._token_debounce_s:
-                self._dbg("SENSOR", f"TOKEN ignorado (debounce PC) remaining={evt.get('remaining')}")
-                return
+            dt = now - self._last_token_ts
             self._last_token_ts = now
             pc_before = int(shared_buffer.get_fichas_restantes())
-            if pc_before <= 0:
-                self._dbg("SENSOR", f"TOKEN ignorado (PC ya en 0) mcu_remaining={evt.get('remaining')}")
-                return
-            # PC es la fuente de verdad: siempre -1 por TOKEN (no usar remaining del MCU).
-            shared_buffer.decrementar_fichas_restantes()
+            mcu_remaining_raw = evt.get("remaining")
+            mcu_remaining = -1
+            try:
+                if mcu_remaining_raw is not None:
+                    mcu_remaining = int(mcu_remaining_raw)
+            except Exception:
+                mcu_remaining = -1
+
+            token_counted = False
+            if mcu_remaining >= 0:
+                # MCU manda remaining real tras contar token; usarlo evita drift PC↔MCU.
+                new_remaining = max(0, mcu_remaining)
+                shared_buffer.set_fichas_restantes(new_remaining, immediate=False)
+                token_counted = new_remaining < pc_before
+            else:
+                if pc_before <= 0:
+                    self._dbg("SENSOR", f"TOKEN ignorado (PC ya en 0) mcu_remaining={evt.get('remaining')}")
+                    return
+                token_counted = bool(shared_buffer.decrementar_fichas_restantes(immediate=False))
+                new_remaining = int(shared_buffer.get_fichas_restantes())
+
             self._last_sent_target = int(shared_buffer.get_fichas_restantes())
             if self._last_sent_target > 0:
                 self._sim_forward_since = now
                 self._sim_unjam_attempts = 0
                 self._sim_last_remaining = self._last_sent_target
-                self._set_motor_ui_state(True, "adelante")
+                current_dir = str(shared_buffer.get_motor_direccion() or "detenido").lower()
+                # Si el token llegó durante destrabe, mantener "atras" hasta UNJAM_DONE/MOTOR_ON.
+                if current_dir == "atras":
+                    self._set_motor_ui_state(True, "atras")
+                else:
+                    self._set_motor_ui_state(True, "adelante")
             else:
                 # En fallback local no llega RUN_DONE; cerramos estado aquí.
                 self._reset_offline_motor_cycle()
                 self._set_motor_ui_state(False, "detenido")
-            mcu_remaining = evt.get("remaining")
+            if dt < self._token_debounce_s:
+                self._dbg(
+                    "SENSOR",
+                    f"TOKEN recibido con dt={dt:.3f}s (< debounce PC {self._token_debounce_s:.3f}s), "
+                    "pero no se descarta (MCU autoritativo).",
+                )
             with self._core._tolvas_lock:
                 if hopper_id in self._core._tolvas_trabadas:
                     self._core._tolvas_trabadas.discard(hopper_id)
-            try:
-                self._core.actualizar_registro("ficha", 1)
-            except Exception as exc:
-                print(f"[ESP32 BRIDGE] actualizar_registro: {exc}")
+            if token_counted:
+                try:
+                    self._core.actualizar_registro("ficha", 1)
+                except Exception as exc:
+                    print(f"[ESP32 BRIDGE] actualizar_registro: {exc}")
             self._dbg(
                 "SENSOR",
-                f"TOKEN tolva={hopper_id} mcu_remaining={mcu_remaining} "
-                f"pc_restantes={shared_buffer.get_fichas_restantes()}",
+                f"TOKEN tolva={hopper_id} mcu_remaining={mcu_remaining_raw} "
+                f"pc_before={pc_before} pc_restantes={shared_buffer.get_fichas_restantes()} "
+                f"counted={1 if token_counted else 0}",
             )
-            print(f"[ESP32] TOKEN tolva {hopper_id} | restantes={shared_buffer.get_fichas_restantes()}")
+            print(
+                f"[ESP32] TOKEN tolva {hopper_id} | restantes={shared_buffer.get_fichas_restantes()} "
+                f"(counted={1 if token_counted else 0})"
+            )
             shared_buffer.persist_now("token")
             self._send_sale_report_if_done()
             self._notify_gui()
             return
         if etype == "RUN_DONE":
             self._dbg("MOTOR", f"RUN_DONE remaining={evt.get('remaining')}")
+            try:
+                shared_buffer.set_fichas_restantes(max(0, int(evt.get("remaining", 0) or 0)), immediate=False)
+            except Exception:
+                pass
             self._reset_offline_motor_cycle()
             self._set_motor_ui_state(False, "detenido")
             self._last_sent_target = int(evt.get("remaining", 0))
@@ -470,6 +561,8 @@ class Esp32Bridge:
         if etype == "UNJAM_DONE":
             self._dbg("MOTOR", f"UNJAM_DONE tolva={hopper_id}")
             print(f"[ESP32] UNJAM_DONE tolva {hopper_id}")
+            # Si destrabó, liberar bloqueo para permitir nuevo SET_TARGET.
+            self._core.bloqueo_emergencia = False
             if not shared_buffer.get_motor_activo():
                 self._set_motor_ui_state(False, "detenido")
             return

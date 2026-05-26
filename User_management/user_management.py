@@ -52,9 +52,18 @@ class UserManagement:
             self.main_callback(user_session)
             return
         # Flujo orquestado por main.py (sin callbacks encadenados).
-        self.root.quit()
-        self.root.destroy()
+        # Evita cerrar/destruir en pleno callback de Tk; solo salir de mainloop.
+        try:
+            self.root.after(0, self.root.quit)
+        except Exception:
+            self.root.quit()
 
     def run(self):
         self.root.mainloop()
-        return self.user_session
+        session = self.user_session
+        # Cierre explícito del root de login luego de salir de mainloop.
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        return session

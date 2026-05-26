@@ -39,8 +39,9 @@ static int targetRemaining = 0;
 static bool motorOn = false;
 static unsigned long motorOnSinceMs = 0;
 static unsigned long motorArmedAtMs = 0;
-static const unsigned long MOTOR_SENSOR_GRACE_MS = 600;
-static const unsigned long MIN_TOKEN_GAP_MS = 280;
+static const unsigned long MOTOR_SENSOR_GRACE_MS = 180;
+// Si este gap queda muy alto, el MCU "pierde" tokens válidos y sobre-dispensa.
+static const unsigned long MIN_TOKEN_GAP_MS = 120;
 static int destrabeAttempts = 0;
 static unsigned long lastDestrabeMs = 0;
 static bool jammed = false;
@@ -52,6 +53,9 @@ static bool sensorPulseActive = false;
 static unsigned long pulseStartMs = 0;
 static unsigned long lastCountMs = 0;
 static int lastSensorState = HIGH;
+static bool unjamInProgress = false;
+
+static void processSensor(void);
 
 static char rxLine[513];
 static size_t rxLen = 0;
@@ -334,9 +338,16 @@ static void doUnjam(float retrocesoS) {
     emitEvent("UNJAM_DONE");
     return;
   }
+  unjamInProgress = true;
   motorReverse(h);
-  delay((unsigned long)(retrocesoS * 1000.0f));
+  unsigned long reverseUntilMs = millis() + (unsigned long)(retrocesoS * 1000.0f);
+  while (millis() < reverseUntilMs) {
+    // Permitir contar token también durante reversa de destrabe.
+    processSensor();
+    delay(2);
+  }
   motorOffPins(h);
+  unjamInProgress = false;
   jammed = false;
   emitEvent("UNJAM_DONE");
   if (targetRemaining > 0) setMotorState(true);
@@ -406,7 +417,9 @@ static void processSensor(void) {
   if (state != lastSensorState) {
     dbgSensorFmt("flanco %d->%d motor=%d target=%d pulse_activo=%d", lastSensorState, state,
                  motorOn ? 1 : 0, targetRemaining, sensorPulseActive ? 1 : 0);
-    if (lastSensorState == HIGH && state == LOW) {
+    // Con el acondicionamiento actual, el sensor queda en LOW en reposo y
+    // el pulso útil de ficha aparece en HIGH; por eso arrancamos pulso en LOW->HIGH.
+    if (lastSensorState == LOW && state == HIGH) {
       float minSep = (float)h->sensorBounceMs;
       if (minSep < 120.0f) minSep = 120.0f;
       float pulsoMs = h->pulsoMinS * 1000.0f;
@@ -419,7 +432,7 @@ static void processSensor(void) {
         dbgSensorFmt("LOW ignorado: muy pronto tras ultimo token (%lums < %dms)",
                      (unsigned long)(now - lastCountMs), (int)minSep);
       }
-    } else if (sensorPulseActive && state == HIGH) {
+    } else if (sensorPulseActive && state == LOW) {
       unsigned long pulsoDur = now - pulseStartMs;
       sensorPulseActive = false;
 #if TEST_STANDALONE
@@ -431,7 +444,7 @@ static void processSensor(void) {
         armTestStandalone();
       }
 #else
-      if (motorOn && targetRemaining > 0) {
+      if ((motorOn || unjamInProgress) && targetRemaining > 0) {
         dbgSensorFmt("pulso FIN dur=%lums -> contar TOKEN", pulsoDur);
         countToken();
       } else {
@@ -571,7 +584,7 @@ static void armTestStandalone(void) {
 
 void setup(void) {
   forceRelaysOffSafe();
-  Serial.begin(9600);
+  Serial.begin(115200);
   targetRemaining = 0;
   motorOn = false;
   configReady = false;

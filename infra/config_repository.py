@@ -26,10 +26,10 @@ DEFAULT_HOPPERS = [
     {
         "id": 1,
         "nombre": "Tolva 1",
-        "motor_pin": 13,
-        "motor_pin_rev": 11,
+        "motor_pin": 12,
+        "motor_pin_rev": 10,
         "motor_active_low": True,
-        "sensor_pin": 9,
+        "sensor_pin": 8,
         "sensor_bouncetime_ms": 8,
     },
 ]

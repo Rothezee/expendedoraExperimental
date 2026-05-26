@@ -35,7 +35,7 @@
     "esp32": {
       "port": "COM4",
       "baud": 115200,
-      "auto_detect": true,
+      "auto_detect": false,
       "connect_timeout_s": 3.0,
       "command_timeout_ms": 500,
       "debug_motor_sensor": true
@@ -48,14 +48,14 @@
       {
         "id": 1,
         "nombre": "Tolva 1",
-        "motor_pin": 13,
-        "motor_pin_rev": 11,
+        "motor_pin": 10,
+        "motor_pin_rev": 12,
         "motor_active_low": true,
-        "sensor_pin": 9,
-        "sensor_bouncetime_ms": 8,
+        "sensor_pin": 8,
+        "sensor_bouncetime_ms": 20,
         "calibracion": {
-          "pulso_min_s": 0.12,
-          "pulso_max_s": 0.12,
+          "pulso_min_s": 0.08,
+          "pulso_max_s": 0.2,
           "timeout_motor_s": 3.5786
         }
       }
@@ -107,8 +107,7 @@
     "promociones": {
       "Promo 1": [
         "<slash>",
-        "<KP_Divide>",
-        "1"
+        "<KP_Divide>"
       ],
       "Promo 2": [
         "<asterisk>",
@@ -133,29 +132,29 @@
     "wifi_ssid": "",
     "wifi_password": ""
   },
-  "updated_at": "2026-05-26 00:45:24",
+  "updated_at": "2026-05-26 20:51:09",
   "contadores_global": {
-    "fichas_expendidas": 5,
-    "dinero_ingresado": 3000.0,
-    "promo1_contador": 1,
+    "fichas_expendidas": 0,
+    "dinero_ingresado": 429000.0,
+    "promo1_contador": 3,
     "promo2_contador": 0,
     "promo3_contador": 0,
     "fichas_restantes": 0,
-    "fichas_devolucion": 0,
-    "fichas_normales": 0,
-    "fichas_promocion": 5,
-    "fichas_cambio": 0
+    "fichas_devolucion": 1,
+    "fichas_normales": 840,
+    "fichas_promocion": 15,
+    "fichas_cambio": 1
   },
   "contadores_parcial": {
-    "fichas_expendidas": 5,
-    "dinero_ingresado": 3000.0,
-    "promo1_contador": 1,
+    "fichas_expendidas": 0,
+    "dinero_ingresado": 429000.0,
+    "promo1_contador": 3,
     "promo2_contador": 0,
     "promo3_contador": 0,
     "fichas_restantes": 0,
-    "fichas_devolucion": 0,
-    "fichas_normales": 0,
-    "fichas_promocion": 5,
-    "fichas_cambio": 0
+    "fichas_devolucion": 1,
+    "fichas_normales": 840,
+    "fichas_promocion": 15,
+    "fichas_cambio": 1
   }
 }

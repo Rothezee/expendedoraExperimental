@@ -11,7 +11,9 @@ from typing import Any, Dict, List, Optional
 
 from infra.esp32_protocol import (
     cmd_config,
+    cmd_config_destrabe,
     cmd_config_hoppers,
+    cmd_dict,
     cmd_hello,
     cmd_ping,
     cmd_select_hopper,
@@ -102,71 +104,222 @@ def _write_frame(ser: Any, payload: Dict[str, Any]) -> None:
     ser.flush()
 
 
-def autodetect_port(probe_timeout_s: float = 0.8, *, verbose: bool = False) -> Optional[str]:
+def _baud_candidates(preferred_baud: int) -> List[int]:
+    ordered = [int(preferred_baud), 115200, 9600, 57600, 19200]
+    seen = set()
+    result: List[int] = []
+    for baud in ordered:
+        if baud <= 0 or baud in seen:
+            continue
+        seen.add(baud)
+        result.append(baud)
+    return result
+
+
+def _same_port(a: str, b: str) -> bool:
+    return str(a or "").strip().lower() == str(b or "").strip().lower()
+
+
+def _wait_handshake(
+    ser: Any,
+    timeout_s: float,
+    *,
+    port: str = "",
+    verbose: bool = False,
+    send_legacy_text: bool = False,
+) -> bool:
+    """
+    Espera READY/HELLO_ACK/PONG reintentando HELLO periódicamente.
+    Evita falsos "desconectado" cuando el Arduino se reinicia al abrir el puerto.
+    """
+    deadline = time.time() + max(1.2, float(timeout_s))
+    next_probe_at = 0.0
+    saw_any_serial_activity = False
+    saw_any_event_frame = False
+    sample_rx: List[str] = []
+    while time.time() < deadline:
+        now = time.time()
+        if now >= next_probe_at:
+            try:
+                _write_frame(ser, cmd_hello())
+                if send_legacy_text:
+                    # Compatibilidad con firmwares legacy de línea simple.
+                    ser.write(b"HELLO\n")
+                    ser.flush()
+            except Exception:
+                return False
+            next_probe_at = now + 0.35
+        try:
+            line = ser.readline()
+        except Exception:
+            return False
+        if not line:
+            continue
+        saw_any_serial_activity = True
+        try:
+            text = line.decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        plain = str(text or "").strip().upper()
+        if plain in ("READY", "HELLO_ACK", "PONG", "OK"):
+            if verbose:
+                print(f"[ESP32] Handshake OK en {port or 'serial'} ({plain})")
+            return True
+        frame = parse_line(text)
+        if not frame:
+            if verbose and plain and len(sample_rx) < 4:
+                sample_rx.append(plain[:120])
+            if plain.startswith("[DBG"):
+                # Hay firmware activo en el puerto aunque no responda HELLO_ACK.
+                saw_any_serial_activity = True
+            continue
+        if str(frame.get("dir", "")).lower() == "evt":
+            saw_any_event_frame = True
+        etype = str(frame.get("type", "")).upper()
+        if verbose and etype and len(sample_rx) < 4:
+            sample_rx.append(f"JSON:{etype}")
+        if etype in ("READY", "HELLO_ACK", "PONG"):
+            if verbose:
+                print(f"[ESP32] Handshake OK en {port or 'serial'} ({etype})")
+            return True
+    # Modo compatible: si hay eventos/tráfico del firmware, aceptar conexión.
+    if saw_any_event_frame or saw_any_serial_activity:
+        if verbose:
+            reason = "eventos" if saw_any_event_frame else "actividad serial"
+            print(
+                f"[ESP32] Handshake flexible en {port or 'serial'} "
+                f"(sin HELLO_ACK, pero con {reason})"
+            )
+        return True
+    if verbose:
+        if sample_rx:
+            print(f"[ESP32] Handshake sin ACK en {port or 'serial'}; RX parcial={sample_rx}")
+        else:
+            print(f"[ESP32] Handshake sin RX en {port or 'serial'}")
+    return False
+
+
+def _validate_protocol_dictionary(
+    ser: Any,
+    timeout_s: float,
+    *,
+    port: str = "",
+    verbose: bool = False,
+    send_legacy_text: bool = False,
+) -> bool:
+    deadline = time.time() + max(0.6, float(timeout_s))
+    next_probe_at = 0.0
+    while time.time() < deadline:
+        now = time.time()
+        if now >= next_probe_at:
+            try:
+                _write_frame(ser, cmd_dict())
+                if send_legacy_text:
+                    # Compatibilidad con firmwares legacy de línea simple.
+                    ser.write(b"DICT\n")
+                    ser.flush()
+            except Exception:
+                return False
+            next_probe_at = now + 0.5
+        try:
+            line = ser.readline()
+        except Exception:
+            return False
+        if not line:
+            continue
+        try:
+            text = line.decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        plain = str(text or "").strip().upper()
+        if plain == "DICT_ACK":
+            if verbose:
+                print(f"[ESP32] Diccionario OK en {port or 'serial'} (texto)")
+            return True
+        frame = parse_line(text)
+        if not frame:
+            continue
+        etype = str(frame.get("type", "")).upper()
+        if etype == "DICT_ACK":
+            if verbose:
+                print(f"[ESP32] Diccionario OK en {port or 'serial'} (JSON)")
+            return True
+    return False
+
+
+def autodetect_port(
+    probe_timeout_s: float = 0.8,
+    *,
+    preferred_baud: int = 115200,
+    preferred_port: str = "",
+    allow_baud_fallback: bool = True,
+    verbose: bool = False,
+) -> Optional[tuple[str, int]]:
     if serial is None or list_ports is None:
         if verbose:
             print("[ESP32] pyserial no disponible para autodetect")
         return None
     ordered = _serial_port_candidates()
+    preferred_port = str(preferred_port or "").strip()
+    if preferred_port:
+        ordered = [preferred_port] + [p for p in ordered if not _same_port(p, preferred_port)]
     if not ordered:
         if verbose:
             print("[ESP32] Autodetect: no hay puertos USB serial (¿Arduino conectado?)")
         return None
     permission_denied: List[str] = []
     for port in ordered:
-        ser = None
-        try:
-            ser = serial.Serial(port, 115200, timeout=0.05)
-            time.sleep(0.25)
+        is_preferred = bool(preferred_port and _same_port(port, preferred_port))
+        baud_candidates = _baud_candidates(preferred_baud)
+        if is_preferred and preferred_baud > 0:
+            if allow_baud_fallback:
+                baud_candidates = [b for b in baud_candidates if b != int(preferred_baud)]
+                if not baud_candidates:
+                    baud_candidates = [int(preferred_baud)]
+            else:
+                baud_candidates = [int(preferred_baud)]
+        per_baud_timeout = max(0.8, float(probe_timeout_s))
+        for baud in baud_candidates:
+            ser = None
             try:
-                ser.reset_input_buffer()
-            except Exception:
-                pass
-            _write_frame(ser, cmd_hello())
-            deadline = time.time() + probe_timeout_s
-            while time.time() < deadline:
-                line = ser.readline()
-                if not line:
-                    continue
+                ser = serial.Serial(port, int(baud), timeout=0.35, write_timeout=1.0)
+                # Reset típico al abrir COM (UNO/CH340): esperar boot.
+                time.sleep(1.35)
                 try:
-                    text = line.decode("utf-8", errors="replace")
-                except Exception:
-                    continue
-                frame = parse_line(text)
-                if frame and str(frame.get("type", "")).upper() in ("READY", "HELLO_ACK", "PONG"):
-                    if verbose:
-                        print(f"[ESP32] Autodetect: OK en {port}")
-                    ser.close()
-                    return port
-            if verbose:
-                print(f"[ESP32] Autodetect: sin HELLO_ACK en {port} ({probe_timeout_s}s)")
-            ser.close()
-        except PermissionError:
-            permission_denied.append(port)
-            if verbose:
-                print(
-                    f"[ESP32] Autodetect: {port} ocupado (cerrá Monitor serie / otra app usando el COM)"
-                )
-            if ser is not None:
-                try:
-                    ser.close()
+                    ser.reset_input_buffer()
                 except Exception:
                     pass
-        except Exception as exc:
-            err = str(exc).lower()
-            if "acceso denegado" in err or "permissionerror" in err or "access is denied" in err:
-                permission_denied.append(port)
+                if _wait_handshake(ser, per_baud_timeout, port=port, verbose=verbose):
+                    if verbose:
+                        print(f"[ESP32] Autodetect: OK en {port} @ {baud}")
+                    ser.close()
+                    return (port, baud)
+                ser.close()
                 if verbose:
                     print(
-                        f"[ESP32] Autodetect: {port} ocupado (cerrá Monitor serie / otra app usando el COM)"
+                        f"[ESP32] Autodetect: sin HELLO_ACK en {port} @ {baud} ({per_baud_timeout}s)"
                     )
-            elif verbose:
-                print(f"[ESP32] Autodetect: {port} falló ({type(exc).__name__}: {exc})")
-            if ser is not None:
-                try:
-                    ser.close()
-                except Exception:
-                    pass
+            except Exception as exc:
+                err = str(exc).lower()
+                if "acceso denegado" in err or "permissionerror" in err or "access is denied" in err:
+                    permission_denied.append(port)
+                    if verbose:
+                        print(
+                            f"[ESP32] Autodetect: {port} ocupado (cerrá Monitor serie / otra app usando el COM)"
+                        )
+                    if ser is not None:
+                        try:
+                            ser.close()
+                        except Exception:
+                            pass
+                    break
+                elif verbose:
+                    print(f"[ESP32] Autodetect: {port} @ {baud} falló ({type(exc).__name__}: {exc})")
+                if ser is not None:
+                    try:
+                        ser.close()
+                    except Exception:
+                        pass
     if permission_denied and verbose:
         print(
             f"[ESP32] Puertos bloqueados: {permission_denied}. "
@@ -193,44 +346,109 @@ class Esp32SerialBackend:
         if serial is None:
             print("[ESP32] pyserial no instalado. pip install pyserial")
             return False
-        port = self._settings["port"]
-        if self._settings["auto_detect"] and not port:
-            port = autodetect_port(
+        configured_port = self._settings["port"]
+        configured_baud = int(self._settings["baud"])
+        port = configured_port
+        baud = configured_baud
+        direct_ok = False
+        if self._settings["auto_detect"]:
+            if configured_port:
+                direct = autodetect_port(
+                    self._settings["connect_timeout_s"],
+                    preferred_baud=configured_baud,
+                    preferred_port=configured_port,
+                    allow_baud_fallback=False,
+                    verbose=True,
+                )
+                if direct:
+                    port, baud = direct
+                    direct_ok = True
+                else:
+                    print(
+                        f"[ESP32] Sin handshake inicial en {configured_port} @ {configured_baud}; "
+                        "escalando a autodetect completo."
+                    )
+            detected = (port, baud) if direct_ok else autodetect_port(
                 self._settings["connect_timeout_s"],
+                preferred_baud=configured_baud,
+                preferred_port=configured_port,
+                allow_baud_fallback=True,
                 verbose=True,
-            ) or ""
+            )
+            if detected:
+                port, baud = detected
+                if baud != configured_baud:
+                    print(
+                        f"[ESP32] Autodetect ajustó baud {configured_baud} -> {baud} "
+                        f"para {port}"
+                    )
+            elif configured_port:
+                print(
+                    f"[ESP32] Autodetect no encontró handshake; "
+                    f"usando puerto configurado como fallback: {configured_port}"
+                )
+                port = configured_port
+                baud = configured_baud
+            else:
+                port = ""
         if not port:
             available = _serial_port_candidates()
             if not available and list_ports is not None:
                 available = [str(p.device) for p in list_ports.comports()]
-            print(
-                "[ESP32] No se encontró puerto serial "
-                f"(configura hardware.esp32.port, ej. COM4 para Mega). "
-                f"USB detectados: {available or 'ninguno'}"
-            )
+            if available:
+                print(
+                    "[ESP32] Se detectaron puertos USB, pero sin handshake válido "
+                    f"(HELLO_ACK/READY). USB detectados: {available}"
+                )
+            else:
+                print(
+                    "[ESP32] No se encontró puerto serial "
+                    f"(configura hardware.esp32.port, ej. COM4 para Mega). "
+                    f"USB detectados: {available or 'ninguno'}"
+                )
             return False
         try:
             self._serial = serial.Serial(
                 port,
-                self._settings["baud"],
-                timeout=0.05,
+                baud,
+                timeout=0.35,
                 write_timeout=1.0,
             )
-            time.sleep(0.2)
+            # Arduino suele reiniciarse al abrir COM; esperar arranque del sketch.
+            time.sleep(1.35)
             try:
                 self._serial.reset_input_buffer()
             except Exception:
                 pass
-            self._reader_stop.clear()
-            self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
-            self._reader_thread.start()
-            self._send_raw(cmd_hello())
-            if not self._wait_for_event(("READY", "HELLO_ACK"), self._settings["connect_timeout_s"]):
+            if not _wait_handshake(
+                self._serial,
+                self._settings["connect_timeout_s"],
+                port=port,
+                verbose=True,
+            ):
                 print(f"[ESP32] Sin respuesta READY en {port}")
                 self.disconnect()
                 return False
+            if not _validate_protocol_dictionary(
+                self._serial,
+                self._settings["connect_timeout_s"],
+                port=port,
+                verbose=True,
+            ):
+                print(
+                    f"[ESP32] Sin DICT_ACK en {port}; continuando en modo compatibilidad "
+                    "(solo HELLO/READY)."
+                )
+            self._reader_stop.clear()
+            # Tras handshake usar timeout corto para lectura reactiva de eventos.
+            try:
+                self._serial.timeout = 0.05
+            except Exception:
+                pass
+            self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+            self._reader_thread.start()
             self._connected = True
-            print(f"[ESP32] Conectado en {port} @ {self._settings['baud']}")
+            print(f"[ESP32] Conectado en {port} @ {baud}")
             return True
         except Exception as exc:
             err = str(exc).lower()
@@ -261,17 +479,25 @@ class Esp32SerialBackend:
         return self._connected and self._serial is not None
 
     def configure_hopper(self, hopper: Dict[str, Any], destrabe: Optional[Dict[str, Any]] = None) -> bool:
-        ok = self._send_raw(
-            cmd_config(hopper, destrabe, debug=self._settings.get("debug_motor_sensor", False))
-        )
+        debug = self._settings.get("debug_motor_sensor", False)
+        ok = self._send_raw(cmd_config(hopper, None, debug=debug))
+        if not ok or not self._wait_for_event(("READY",), 2.0):
+            return False
+        if destrabe is None:
+            return True
+        ok = self._send_raw(cmd_config_destrabe(destrabe, debug=debug))
         if ok:
             return self._wait_for_event(("READY",), 2.0)
         return False
 
     def configure_hoppers(self, hoppers: List[Dict[str, Any]], destrabe: Optional[Dict[str, Any]] = None) -> bool:
-        ok = self._send_raw(
-            cmd_config_hoppers(hoppers, destrabe, debug=self._settings.get("debug_motor_sensor", False))
-        )
+        debug = self._settings.get("debug_motor_sensor", False)
+        ok = self._send_raw(cmd_config_hoppers(hoppers, None, debug=debug))
+        if not ok or not self._wait_for_event(("READY",), 2.0):
+            return False
+        if destrabe is None:
+            return True
+        ok = self._send_raw(cmd_config_destrabe(destrabe, debug=debug))
         if ok:
             return self._wait_for_event(("READY",), 2.0)
         return False

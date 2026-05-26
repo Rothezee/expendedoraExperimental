@@ -2,8 +2,7 @@
   "promociones": {
     "Promo 1": [
       "<slash>",
-      "<KP_Divide>",
-      "1"
+      "<KP_Divide>"
     ],
     "Promo 2": [
       "<asterisk>",
@@ -16,5 +15,5 @@
       "<KP_Subtract>"
     ]
   },
-  "updated_at": "2026-05-26 00:45:18"
+  "updated_at": "2026-05-26 14:02:44"
 }

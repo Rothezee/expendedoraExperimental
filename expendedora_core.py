@@ -58,9 +58,9 @@ DEFAULT_TOLVAS = [
     {
         "id": 1,
         "nombre": "Tolva 1",
-        "motor_pin": 13,
-        "motor_pin_rev": 11,
-        "sensor_pin": 9,
+        "motor_pin": 12,
+        "motor_pin_rev": 10,
+        "sensor_pin": 8,
         "calibracion": {"pulso_min_s": 0.05, "pulso_max_s": 0.5, "timeout_motor_s": 2.0},
     },
 ]
@@ -378,18 +378,24 @@ def iniciar_sistema():
     """Inicializa el puente ESP32 (motor/sensor en el microcontrolador)."""
     global _esp32_bridge
 
+    print("[CORE] iniciar_sistema: cargando configuración de tolvas")
     _cargar_tolvas_desde_config()
+    print("[CORE] iniciar_sistema: recuperando estado")
     recuperar_y_hidratar_estado()
+    print("[CORE] iniciar_sistema: enviando heartbeat inicial")
     enviar_pulso()
 
     import sys
     from infra.esp32_bridge import Esp32Bridge, set_bridge
 
+    print("[CORE] iniciar_sistema: creando bridge ESP32")
     _esp32_bridge = Esp32Bridge(sys.modules[__name__])
     set_bridge(_esp32_bridge)
+    print("[CORE] iniciar_sistema: intentando conexión inicial ESP32")
     if not _esp32_bridge.start():
         print("[CORE] ESP32 no conectado al inicio; el puente reintentará en segundo plano")
     motor_thread = threading.Thread(target=_esp32_bridge.run_loop, daemon=True)
+    print("[CORE] iniciar_sistema: iniciando hilo de bridge")
     motor_thread.start()
     print("[CORE] Sistema iniciado (ESP32 serial USB)")
     return motor_thread

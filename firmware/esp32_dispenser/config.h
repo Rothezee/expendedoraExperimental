@@ -8,9 +8,9 @@
 #define TEST_STANDALONE 0
 #define TEST_FICHAS_INICIALES 5
 
-#define DEFAULT_MOTOR_PIN 13
-#define DEFAULT_MOTOR_REV_PIN 11
-#define DEFAULT_SENSOR_PIN 9
+#define DEFAULT_MOTOR_PIN 10
+#define DEFAULT_MOTOR_REV_PIN 12
+#define DEFAULT_SENSOR_PIN 8
 #define DEFAULT_MOTOR_ACTIVE_LOW 1
 
 #if TEST_STANDALONE
@@ -30,7 +30,7 @@
 #define MAX_HOPPERS 3
 
 #define DEBUG_SENSOR 1
-#define DEBUG_SENSOR_INTERVAL_MS 400
+#define DEBUG_SENSOR_INTERVAL_MS 40
 
 #ifndef max
 #define max(a, b) ((a) > (b) ? (a) : (b))
