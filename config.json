@@ -132,29 +132,29 @@
     "wifi_ssid": "",
     "wifi_password": ""
   },
-  "updated_at": "2026-05-26 20:51:09",
+  "updated_at": "2026-05-26 21:11:44",
   "contadores_global": {
     "fichas_expendidas": 0,
-    "dinero_ingresado": 429000.0,
-    "promo1_contador": 3,
+    "dinero_ingresado": 0.0,
+    "promo1_contador": 0,
     "promo2_contador": 0,
     "promo3_contador": 0,
     "fichas_restantes": 0,
-    "fichas_devolucion": 1,
-    "fichas_normales": 840,
-    "fichas_promocion": 15,
-    "fichas_cambio": 1
+    "fichas_devolucion": 0,
+    "fichas_normales": 0,
+    "fichas_promocion": 0,
+    "fichas_cambio": 0
   },
   "contadores_parcial": {
     "fichas_expendidas": 0,
-    "dinero_ingresado": 429000.0,
-    "promo1_contador": 3,
+    "dinero_ingresado": 0.0,
+    "promo1_contador": 0,
     "promo2_contador": 0,
     "promo3_contador": 0,
     "fichas_restantes": 0,
-    "fichas_devolucion": 1,
-    "fichas_normales": 840,
-    "fichas_promocion": 15,
-    "fichas_cambio": 1
+    "fichas_devolucion": 0,
+    "fichas_normales": 0,
+    "fichas_promocion": 0,
+    "fichas_cambio": 0
   }
 }
