@@ -1,4 +1,6 @@
 #main.py
+import os
+import getpass
 import tkinter as tk
 from expendedora_gui import ExpendedoraGUI
 from expendedora_core import CoreController
@@ -63,10 +65,44 @@ def main(user_session):
         _trace("main() end")
 
 
+def _kiosk_mode_enabled() -> bool:
+    return str(os.environ.get("EXPENDEDORA_KIOSK", "")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _kiosk_session_user() -> str:
+    explicit = str(os.environ.get("EXPENDEDORA_KIOSK_USER", "")).strip()
+    if explicit:
+        return explicit
+    return str(getpass.getuser() or "cajero").strip() or "cajero"
+
+
+def run_kiosk_autostart():
+    """
+    Modo mostrador: sin pantalla de login (usuario Windows = sesión de cajero).
+    Activar con EXPENDEDORA_KIOSK=1 (launcher kiosk en Windows).
+    """
+    username = _kiosk_session_user()
+    _trace(f"Kiosk autostart user={username!r}")
+    while True:
+        try:
+            action = main({"username": username, "cashier_id": None})
+        except Exception as exc:
+            _trace(f"Error en app kiosk: {type(exc).__name__}: {exc}")
+            action = "exit"
+        if action == "logout":
+            _trace("Logout en kiosk; volviendo a abrir app")
+            continue
+        _trace("Cierre de app kiosk; saliendo")
+        break
+
+
 def run_kiosk_loop():
     """
     Orquesta login -> app principal evitando árboles Tk anidados.
     """
+    if _kiosk_mode_enabled():
+        run_kiosk_autostart()
+        return
     while True:
         try:
             _trace("Iniciando UserManagement()")

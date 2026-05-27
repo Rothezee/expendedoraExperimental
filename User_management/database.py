@@ -91,6 +91,11 @@ def add_user(nombre, contraceña):
     try:
         created_remote = _auth_repo.create_cashier(nombre, contraceña, require_remote=True)
         if created_remote:
+            # Espejo en MySQL local para que login offline / active=local también encuentre al cajero.
+            try:
+                _auth_repo.create_cashier(nombre, contraceña, require_remote=False)
+            except Exception:
+                pass
             return {
                 "ok": True,
                 "mode": "remote",

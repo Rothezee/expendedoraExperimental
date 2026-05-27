@@ -74,5 +74,31 @@ class UserManagementRemoteSyncTest(unittest.TestCase):
                 repo.create_cashier("cajero_test", "1234", require_remote=True)
 
 
+    def test_authenticate_tries_secondary_mysql_target(self):
+        import mysql.connector
+
+        config_repo = Mock()
+        repo = AuthRepositoryMySQL(config_repo)
+        local_conn = Mock()
+        remote_conn = Mock()
+        local_cursor = Mock()
+        remote_cursor = Mock()
+        local_conn.cursor.return_value = local_cursor
+        remote_conn.cursor.return_value = remote_cursor
+        local_cursor.fetchone.return_value = None
+        remote_cursor.fetchone.return_value = (7, "cajero1", 42)
+
+        targets = [{"host": "127.0.0.1"}, {"host": "remote.example"}]
+
+        with (
+            patch.object(config_repo, "iter_mysql_targets", return_value=targets),
+            patch.object(repo, "_get_dni_admin", return_value=None),
+            patch.object(mysql.connector, "connect", side_effect=[local_conn, remote_conn]),
+        ):
+            row = repo.authenticate_cashier("cajero1", "1234")
+
+        self.assertEqual(row, (7, "cajero1", 42))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,28 +14,39 @@
     powershell -ExecutionPolicy Bypass -File configSO\windows\install_cajero_kiosk.ps1 -NoPassword
 
 .EXAMPLE
+    powershell -ExecutionPolicy Bypass -File configSO\windows\install_cajero_kiosk.ps1 -NoPassword -DeployTo
+
+.EXAMPLE
     powershell -ExecutionPolicy Bypass -File configSO\windows\install_cajero_kiosk.ps1 `
-        -KioskUser cajero -Password 'MiClaveSegura!' -AppPath 'C:\Expendedora'
+        -KioskUser cajero -Password 'MiClaveSegura!' -AppPath 'C:\expendedoraExperimental'
 #>
 param(
     [string]$KioskUser = "cajero",
     [string]$Password = "cajero123",
     [string]$AppPath = "",
+    [switch]$DeployTo,
     [ValidateSet("Shell", "Startup", "Both")]
-    [string]$LaunchMode = "Both",
+    [string]$LaunchMode = "Startup",
     [switch]$SkipAutoLogon,
     [switch]$NoPassword,
-    [switch]$WhatIf
+    [switch]$WhatIf,
+    [switch]$SkipRestrictionsTask
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $ScriptDir "kiosk_paths.ps1")
+. (Join-Path $ScriptDir "kiosk_registry.ps1")
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
 $TemplateDir = Join-Path $ScriptDir "templates"
 $TaskName = "ExpendedoraKioskLauncher"
+$SetupTaskName = "ExpendedoraKioskApplyRegistry"
 $KioskFolderName = "ExpendedoraKiosk"
 
-if (-not $AppPath) {
+if ($DeployTo) {
+    $AppPath = $script:DefaultInstallPath
+}
+elseif (-not $AppPath) {
     $AppPath = $RepoRoot.Path
 }
 
@@ -52,8 +63,36 @@ Write-Host "Modo arranque : $LaunchMode"
 Write-Host "Sin contraseña: $NoPassword"
 Write-Host ""
 
+$sourceRepo = $RepoRoot.Path
+if ($DeployTo -and -not $WhatIf) {
+    Write-Host "Desplegando proyecto -> $AppPath ..."
+    $AppPath = Deploy-ExpendedoraToInstallPath -SourcePath $sourceRepo -DestPath $AppPath
+}
+
 if (-not (Test-Path (Join-Path $AppPath "main.py"))) {
     throw "No se encontró main.py en AppPath: $AppPath"
+}
+
+$pythonForKiosk = $null
+if (-not $WhatIf) {
+    try {
+        $pythonForKiosk = Ensure-VenvAtAppPath -AppPath $AppPath
+        Write-Host "  Python kiosk: $pythonForKiosk"
+    }
+    catch {
+        Write-Warning "No se pudo crear .venv en ${AppPath}: $($_.Exception.Message)"
+        $pythonForKiosk = Find-PythonForKiosk -AppPath $AppPath
+    }
+    if (-not $pythonForKiosk) {
+        Write-Warning "Instalá Python 3.10+ o usá -DeployTo y re-ejecutá el instalador."
+    }
+    else {
+        New-Item -Path "HKLM:\SOFTWARE\Expendedora" -Force | Out-Null
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Expendedora" -Name "AppPath" -Value $AppPath -Force
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Expendedora" -Name "PythonExe" -Value $pythonForKiosk -Force
+        Set-KioskConfig -AppPath $AppPath -PythonExe $pythonForKiosk
+        Grant-KioskAppAccess -AppPath $AppPath -KioskUser $KioskUser
+    }
 }
 
 function Enable-BlankPasswordLogon {
@@ -165,31 +204,33 @@ else {
     Write-Host "[2/8] Modo con contraseña (sin cambios de política LSA)."
 }
 
-# --- Perfil y carpeta kiosk ---
+# --- Launcher en ProgramData (no depende de copiar perfil Default) ---
 $profilePath = Join-Path $env:SystemDrive "Users\$KioskUser"
-$kioskDir = Join-Path $profilePath $KioskFolderName
+$kioskDir = Join-Path $env:ProgramData $KioskFolderName
 
-Write-Host "[3/8] Preparando perfil y launcher..."
+Write-Host "[3/8] Preparando launcher en ProgramData..."
 if (-not $WhatIf) {
-    if (-not (Test-Path $profilePath)) {
-        $defaultProfile = Join-Path $env:SystemDrive "Users\Default"
-        if (Test-Path $defaultProfile) {
-            Write-Host "  Copiando perfil Default -> $KioskUser (primera vez)"
-            robocopy $defaultProfile $profilePath /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
-        }
-    }
     New-Item -ItemType Directory -Path $kioskDir -Force | Out-Null
 
     $launcherPs1 = Join-Path $kioskDir "launch_expendedora_kiosk.ps1"
-    $launcherCmd = Join-Path $kioskDir "launch_expendedora_kiosk.cmd"
     $templatePs1 = Get-Content (Join-Path $TemplateDir "launch_expendedora_kiosk.ps1") -Raw
     $escapedAppPath = $AppPath.Replace("'", "''")
     $templatePs1 = $templatePs1.Replace("__APP_PATH__", $escapedAppPath)
     Set-Content -Path $launcherPs1 -Value $templatePs1 -Encoding UTF8
-    Copy-Item (Join-Path $TemplateDir "launch_expendedora_kiosk.cmd") $launcherCmd -Force
+    Copy-Item (Join-Path $ScriptDir "apply_kiosk_user_registry.ps1") (Join-Path $kioskDir "apply_kiosk_user_registry.ps1") -Force
+    Copy-Item (Join-Path $ScriptDir "kiosk_registry.ps1") (Join-Path $kioskDir "kiosk_registry.ps1") -Force
+    Copy-Item (Join-Path $ScriptDir "apply_kiosk_restrictions.ps1") (Join-Path $kioskDir "apply_kiosk_restrictions.ps1") -Force
+    Copy-Item (Join-Path $ScriptDir "kiosk_paths.ps1") (Join-Path $kioskDir "kiosk_paths.ps1") -Force
 
-    icacls $AppPath /grant "${KioskUser}:(RX)" /T /C | Out-Null
-    icacls $AppPath /grant "${KioskUser}:(M)" /C | Out-Null
+    $userLauncherCmd = Install-KioskUserCmd -AppPath $AppPath -DestDir $kioskDir `
+        -TemplateCmdPath (Join-Path $TemplateDir "AbrirExpendedora.cmd")
+    Install-KioskUserCmd -AppPath $AppPath -DestDir $AppPath `
+        -TemplateCmdPath (Join-Path $TemplateDir "AbrirExpendedora.cmd") | Out-Null
+
+    Grant-KioskPathAcl -Path $kioskDir -KioskUser $KioskUser
+    Write-Host "  Launcher CMD: $userLauncherCmd"
+
+    Install-KioskDesktopShortcut -KioskUser $KioskUser -AppPath $AppPath -LauncherCmd $userLauncherCmd
 }
 
 # --- Auto-login ---
@@ -201,75 +242,59 @@ else {
     Write-Host "  Auto-login omitido (-SkipAutoLogon)."
 }
 
-# --- Shell personalizado (HKU) ---
+# --- Shell personalizado (HKU) y Startup ---
 Write-Host "[5/8] Configurando shell / startup..."
-$sid = $null
-try {
-    $acct = New-Object System.Security.Principal.NTAccount($KioskUser)
-    $sid = $acct.Translate([System.Security.Principal.SecurityIdentifier]).Value
-}
-catch {
-    Write-Host "  Aviso: no se pudo resolver SID (se aplicará en primer inicio)."
-}
-
-if ($sid -and -not $WhatIf) {
-    $ntuser = Join-Path $profilePath "NTUSER.DAT"
-    $hiveLoaded = $false
-    $tempHive = "ExpendedoraKiosk_$KioskUser"
-    try {
-        if (Test-Path $ntuser) {
-            reg.exe unload "HKU\$tempHive" 2>$null | Out-Null
-            reg.exe load "HKU\$tempHive" $ntuser | Out-Null
-            $hiveLoaded = $true
-            $hiveRoot = "Registry::HKEY_USERS\$tempHive"
-
-            if ($LaunchMode -in @("Shell", "Both")) {
-                $shellCmd = Join-Path $kioskDir "launch_expendedora_kiosk.cmd"
-                $shellPath = "cmd.exe /c `"$shellCmd`""
-                Set-ItemProperty -Path "$hiveRoot\Software\Microsoft\Windows NT\CurrentVersion\Winlogon" `
-                    -Name "Shell" -Value $shellPath -Force
-                Write-Host "  Shell kiosk: $shellPath"
-            }
-
-            & (Join-Path $ScriptDir "apply_kiosk_restrictions.ps1") -Sid $tempHive
-
-            [gc]::Collect()
-            Start-Sleep -Seconds 1
-            reg.exe unload "HKU\$tempHive" | Out-Null
+$registryApplied = $false
+if (-not $WhatIf) {
+    if ($LaunchMode -in @("Shell", "Both")) {
+        $registryApplied = Apply-KioskUserRegistry -KioskUser $KioskUser -ProfilePath $profilePath `
+            -KioskDir $kioskDir -ScriptDir $ScriptDir -LaunchMode $LaunchMode
+        if (-not $registryApplied) {
+            Write-Host "  Shell no aplicado offline; usá Startup/tarea (sin bucle de reinicio)."
         }
     }
-    catch {
-        if ($hiveLoaded) { reg.exe unload "HKU\$tempHive" 2>$null | Out-Null }
-        Write-Warning "No se pudo cargar NTUSER.DAT: $($_.Exception.Message)"
-        Write-Host "  Ejecutá de nuevo este script después del primer inicio del usuario $KioskUser."
+    else {
+        Write-Host "  Modo Startup: sin shell custom (recomendado; evita bucles de reinicio)."
     }
 }
 
+# Respaldo Startup solo si el perfil ya existe (la tarea principal evita duplicados con mutex).
 if ($LaunchMode -in @("Startup", "Both") -and -not $WhatIf) {
     $startup = Join-Path $profilePath "AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
-    New-Item -ItemType Directory -Path $startup -Force | Out-Null
-    $vbs = Join-Path $startup "ExpendedoraKiosk.vbs"
-    $launcherPs1 = Join-Path $kioskDir "launch_expendedora_kiosk.ps1"
-    @"
+    if (Test-Path (Split-Path $startup -Parent)) {
+        New-Item -ItemType Directory -Path $startup -Force | Out-Null
+        $vbs = Join-Path $startup "ExpendedoraKiosk.vbs"
+        $startCmd = Join-Path $kioskDir "AbrirExpendedora.cmd"
+        $cmdEsc = $startCmd.Replace('"', '""')
+        @"
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$launcherPs1""", 0, False
+WshShell.Run "cmd.exe /c ""$cmdEsc""", 0, False
 "@ | Set-Content -Path $vbs -Encoding ASCII
-    Write-Host "  Acceso directo en Startup: $vbs"
+        Write-Host "  Respaldo Startup: $vbs"
+    }
+    else {
+        Write-Host "  Startup omitido hasta primer perfil (la tarea al logon alcanza)."
+    }
 }
 
-# --- Tarea programada al logon ---
+# --- Tarea programada al logon (app fullscreen; sin shell custom) ---
 Write-Host "[6/8] Registrando tarea al iniciar sesión..."
 if (-not $WhatIf) {
-    $launcherPs1 = Join-Path $kioskDir "launch_expendedora_kiosk.ps1"
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcherPs1`""
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $KioskUser
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
-    $principal = New-ScheduledTaskPrincipal -UserId $KioskUser -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-        -Settings $settings -Principal $principal -Description "Mantiene expendedora en modo kiosk" -Force | Out-Null
+    $startCmd = Join-Path $kioskDir "AbrirExpendedora.cmd"
+    Register-KioskLogonTask -TaskName $TaskName -KioskUser $KioskUser -LauncherCmd $startCmd
     Write-Host "  Tarea: $TaskName"
+
+    if (-not $SkipRestrictionsTask) {
+        $applyScript = Join-Path $kioskDir "apply_kiosk_user_registry.ps1"
+        $setupAction = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$applyScript`""
+        $setupTrigger = New-KioskLogonTaskTrigger -KioskUser $KioskUser -DelaySeconds 15
+        $setupSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        $setupPrincipal = New-ScheduledTaskPrincipal -UserId $KioskUser -LogonType Interactive -RunLevel Limited
+        Register-ScheduledTask -TaskName $SetupTaskName -Action $setupAction -Trigger $setupTrigger `
+            -Settings $setupSettings -Principal $setupPrincipal -Description "Restricciones kiosk (sin shell)" -Force | Out-Null
+        Write-Host "  Tarea: $SetupTaskName (restricciones escritorio)"
+    }
 }
 
 Write-Host "[7/8] Ajustando energía (no suspender)..."
@@ -282,7 +307,11 @@ Write-Host "[8/8] Finalizado."
 Write-Host ""
 Write-Host "Próximos pasos:"
 Write-Host "  1. Reiniciá:  shutdown /r /t 0"
-Write-Host "  2. La PC debería entrar sola al usuario $KioskUser y abrir la expendedora."
+Write-Host "  2. Entrará a $KioskUser y abrirá la expendedora en pantalla completa (sin login interno)."
+Write-Host "  3. NO uses -LaunchMode Shell (puede causar bucle de reinicio)."
+Write-Host "  App en: $AppPath"
+Write-Host "  Diagnóstico: configSO\windows\diagnose_kiosk.ps1"
+Write-Host "  Log cajero: C:\Users\$KioskUser\expendedora-kiosk.log"
 Write-Host ""
 Write-Host "Usuario: $KioskUser"
 if ($NoPassword) {
@@ -294,5 +323,6 @@ else {
     Write-Host "  Si cambiás la contraseña, re-ejecutá este script."
 }
 Write-Host ""
-Write-Host "Salir del kiosk (admin): Ctrl+Alt+Del -> cambiar usuario, o desinstalar con:"
-Write-Host "  powershell -ExecutionPolicy Bypass -File configSO\windows\uninstall_cajero_kiosk.ps1"
+Write-Host "Salir del kiosk (admin): Ctrl+Alt+Del -> cambiar usuario"
+Write-Host "Bucle de reinicio: recover_from_kiosk_loop.ps1 (como admin)"
+Write-Host "Desinstalar: uninstall_cajero_kiosk.ps1"

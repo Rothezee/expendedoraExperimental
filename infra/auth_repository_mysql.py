@@ -123,37 +123,65 @@ class AuthRepositoryMySQL:
         finally:
             conn.close()
 
+    def _fetch_authenticated_cashier(self, cursor, username: str, pin: str):
+        dni_admin = self._get_dni_admin()
+        if dni_admin:
+            cursor.execute(
+                """
+                SELECT c.id_cajero, c.usuario_cajero, c.id_admin
+                FROM cajeros c
+                INNER JOIN usuarios_admin a ON a.id_admin = c.id_admin
+                WHERE c.usuario_cajero = %s
+                  AND c.pin_acceso = %s
+                  AND c.estado = 1
+                  AND a.dni = %s
+                LIMIT 1
+                """,
+                (username, pin, dni_admin),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT c.id_cajero, c.usuario_cajero, c.id_admin
+                FROM cajeros c
+                WHERE c.usuario_cajero = %s
+                  AND c.pin_acceso = %s
+                  AND c.estado = 1
+                LIMIT 1
+                """,
+                (username, pin),
+            )
+        return cursor.fetchone()
+
     def authenticate_cashier(self, username: str, pin: str):
-        conn = self._connect()
-        cursor = conn.cursor()
-        try:
-            dni_admin = self._get_dni_admin()
-            if dni_admin:
-                cursor.execute(
-                    """
-                    SELECT c.id_cajero, c.usuario_cajero, c.id_admin
-                    FROM cajeros c
-                    INNER JOIN usuarios_admin a ON a.id_admin = c.id_admin
-                    WHERE c.usuario_cajero = %s
-                      AND c.pin_acceso = %s
-                      AND c.estado = 1
-                      AND a.dni = %s
-                    LIMIT 1
-                    """,
-                    (username, pin, dni_admin),
-                )
-            else:
-                cursor.execute(
-                    """
-                    SELECT c.id_cajero, c.usuario_cajero, c.id_admin
-                    FROM cajeros c
-                    WHERE c.usuario_cajero = %s
-                      AND c.pin_acceso = %s
-                      AND c.estado = 1
-                    LIMIT 1
-                    """,
-                    (username, pin),
-                )
-            return cursor.fetchone()
-        finally:
-            conn.close()
+        """
+        Busca el cajero en todos los perfiles MySQL configurados (local y remoto).
+        El registro remoto deja usuarios en production; antes solo se consultaba active (local).
+        """
+        last_exc = None
+        targets = self.config_repository.iter_mysql_targets()
+        if not targets:
+            raise RuntimeError("No MySQL targets configured")
+
+        for target in targets:
+            conn = None
+            try:
+                conn = mysql.connector.connect(**target)
+            except Exception as exc:
+                last_exc = exc
+                continue
+            try:
+                cursor = conn.cursor()
+                try:
+                    row = self._fetch_authenticated_cashier(cursor, username, pin)
+                finally:
+                    cursor.close()
+                if row:
+                    return row
+            finally:
+                if conn is not None:
+                    conn.close()
+
+        if last_exc and len(targets) == 1:
+            raise last_exc
+        return None
