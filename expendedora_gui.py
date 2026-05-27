@@ -29,6 +29,7 @@ DEFAULT_PROMO_HOTKEYS = {
     "Promo 3": ["<minus>", "<KP_Subtract>"],
 }
 
+import queue
 import threading as _threading
 
 def _post_en_hilo(url, datos, descripcion="", retry_without_cashier_id=False, timeout_s=5, headers=None):
@@ -149,8 +150,10 @@ class ExpendedoraGUI:
         self.contadores_parcial = self.counter_service.default_counters()
         self._sync_counter_aliases()
 
-        # --- ANTI-FLOOD: evita encolar root.after duplicados y guardar config en cada ficha ---
-        self._after_sincronizar_pendiente = False  # True si ya hay un callback en cola
+        # --- Cola hilo principal: el bridge ESP32 NO puede llamar root.after() ---
+        self._gui_main_queue = queue.Queue()
+        self._gui_sync_scheduled = False
+        self._gui_poll_after_id = None
         self._guardar_config_timer = None          # Timer para debounce de guardar_configuracion
         
         self.cargar_configuracion()
@@ -174,6 +177,7 @@ class ExpendedoraGUI:
         self.core.register_gui_update(self.sincronizar_desde_core)
         self.core.register_gui_motor_alert(self.mostrar_alerta_motor_trabado)
         shared_buffer.set_gui_update_callback(self.sincronizar_desde_core)
+        self.root.after(0, self._start_gui_main_loop)
 
         # Header
         self.header_frame = tk.Frame(root, bg=self.colors["header"], height=76)
@@ -1280,52 +1284,85 @@ class ExpendedoraGUI:
             for key in keys:
                 entry.bind(key, lambda e, promo_name=promo: self._trigger_action(lambda: self.simular_promo(promo_name)))
 
+    def _start_gui_main_loop(self):
+        """Procesa eventos GUI encolados desde hilos del motor/ESP32/red."""
+        if self._is_shutting_down:
+            return
+        self._poll_gui_main_queue()
+
+    def _poll_gui_main_queue(self):
+        if self._is_shutting_down:
+            return
+        sync = False
+        network_status = None
+        motor_alert = None
+        while True:
+            try:
+                kind, payload = self._gui_main_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "sync":
+                sync = True
+            elif kind == "network":
+                network_status = payload
+            elif kind == "motor_alert":
+                motor_alert = payload
+        if sync:
+            self._apply_sync_from_core()
+        if network_status is not None:
+            self.actualizar_estado_red_ui(network_status)
+        if motor_alert is not None:
+            self._show_motor_alert_dialog(motor_alert)
+        try:
+            self._gui_poll_after_id = self.root.after(20, self._poll_gui_main_queue)
+        except Exception:
+            self._gui_poll_after_id = None
+
+    def _enqueue_gui_event(self, kind, payload=None):
+        if self._is_shutting_down:
+            return
+        try:
+            self._gui_main_queue.put_nowait((kind, payload))
+        except queue.Full:
+            pass
+
     def sincronizar_desde_core(self):
         """
-        Llamada por el core cuando cambian los contadores.
-        SIEMPRE usa root.after() para ejecutar en el hilo de Tkinter.
-        NUNCA llama _actualizar() directamente desde el hilo del motor
-        (causaría TclError con update_idletasks y mataría el loop del motor).
+        Llamada desde el hilo del motor/ESP32 cuando cambian contadores.
+        Encola trabajo para el hilo principal (Tkinter no es thread-safe).
         """
-        if self._after_sincronizar_pendiente:
+        if self._gui_sync_scheduled:
             return
+        self._gui_sync_scheduled = True
+        self._enqueue_gui_event("sync")
 
-        def _actualizar():
-            self._after_sincronizar_pendiente = False
-            self._ultimo_evento_core_ts = datetime.now()
+    def _apply_sync_from_core(self):
+        self._gui_sync_scheduled = False
+        self._ultimo_evento_core_ts = datetime.now()
 
-            fichas_restantes_hw = shared_buffer.get_fichas_restantes()
-            fichas_expendidas_hw = shared_buffer.get_fichas_expendidas()
+        fichas_restantes_hw = shared_buffer.get_fichas_restantes()
+        fichas_expendidas_hw = shared_buffer.get_fichas_expendidas()
 
-            nuevo_parcial = self.inicio_parcial_fichas + fichas_expendidas_hw
-            nuevo_global = self.inicio_apertura_fichas + fichas_expendidas_hw
+        nuevo_parcial = self.inicio_parcial_fichas + fichas_expendidas_hw
+        nuevo_global = self.inicio_apertura_fichas + fichas_expendidas_hw
 
-            contadores_cambiaron = False
-            if nuevo_parcial != self.contadores_parcial["fichas_expendidas"]:
-                self.contadores_parcial["fichas_expendidas"] = nuevo_parcial
-                self.contadores_global["fichas_expendidas"] = nuevo_global
-                contadores_cambiaron = True
+        contadores_cambiaron = False
+        if nuevo_parcial != self.contadores_parcial["fichas_expendidas"]:
+            self.contadores_parcial["fichas_expendidas"] = nuevo_parcial
+            self.contadores_global["fichas_expendidas"] = nuevo_global
+            contadores_cambiaron = True
 
-            if fichas_restantes_hw != self.contadores["fichas_restantes"]:
-                self.contadores["fichas_restantes"] = fichas_restantes_hw
-                contadores_cambiaron = True
+        if fichas_restantes_hw != self.contadores["fichas_restantes"]:
+            self.contadores["fichas_restantes"] = fichas_restantes_hw
+            contadores_cambiaron = True
 
-            if contadores_cambiaron:
-                if self._active_page in ("main", "contadores"):
-                    self.actualizar_contadores_gui()
-                self._persistir_estado_critico("sync_core")
+        if contadores_cambiaron:
+            if self._active_page in ("main", "contadores"):
+                self.actualizar_contadores_gui()
+            self._persistir_estado_critico("sync_core")
 
-            if self._active_page == "main":
-                self.actualizar_tolvas_gui()
-
-        try:
-            self._after_sincronizar_pendiente = True
-            self.root.after(0, _actualizar)
-        except Exception as e:
-            # Si root.after falla, liberar el flag y NO ejecutar nada en este hilo.
-            # El motor loop NO debe ejecutar código de Tkinter directamente.
-            self._after_sincronizar_pendiente = False
-            print(f"[GUI] root.after falló (se ignora, motor no afectado): {e}")
+        if self._active_page == "main":
+            self.actualizar_tolvas_gui()
 
     def seleccionar_tolva_siguiente(self):
         self.core.seleccionar_tolva_siguiente()
@@ -1608,25 +1645,18 @@ class ExpendedoraGUI:
             self.status_last_event_lbl.config(text=f"Últ. evento: {self._ultimo_evento_core_ts.strftime('%H:%M:%S')}")
 
     def mostrar_alerta_motor_trabado(self, fichas_pendientes):
-        """
-        Muestra una alerta crítica cuando el motor se traba.
-        Esta función es llamada automáticamente desde el core.
-        """
-        def _mostrar():
-            mensaje = (f"⚠️ PRECAUCIÓN - MOTOR TRABADO ⚠️\n\n"
-                       f"El motor lleva demasiado tiempo encendido sin dispensar.\n"
-                       f"Por favor, verifique el mecanismo y libere la obstrucción.")
-            
-            # Mostrar alerta simple (OK) en lugar de pregunta
-            messagebox.showwarning("⚠️ MOTOR TRABADO", mensaje)
+        """Encola alerta de motor trabado (puede llamarse desde el hilo ESP32)."""
+        self._enqueue_gui_event("motor_alert", int(fichas_pendientes or 0))
 
-            # Al cerrar el cartel (Aceptar), desbloquear el motor para continuar
-            self.core.unlock_motor()
-        
-        try:
-            self.root.after(0, _mostrar)
-        except:
-            _mostrar()
+    def _show_motor_alert_dialog(self, fichas_pendientes):
+        mensaje = (
+            "⚠️ PRECAUCIÓN - MOTOR TRABADO ⚠️\n\n"
+            "El motor lleva demasiado tiempo encendido sin dispensar.\n"
+            f"Fichas pendientes: {fichas_pendientes}\n"
+            "Por favor, verifique el mecanismo y libere la obstrucción."
+        )
+        messagebox.showwarning("⚠️ MOTOR TRABADO", mensaje)
+        self.core.unlock_motor()
 
     def cargar_configuracion(self):
         config = self.config_repository.load()
@@ -1792,10 +1822,7 @@ class ExpendedoraGUI:
         if not isinstance(status, dict):
             return
         self._network_status_ui = status
-        try:
-            self.root.after(0, lambda: self.actualizar_estado_red_ui(status))
-        except Exception as exc:
-            print(f"[GUI] No se pudo actualizar estado de red: {exc}")
+        self._enqueue_gui_event("network", dict(status))
 
     def actualizar_estado_red_ui(self, status=None):
         if status is None:
@@ -2975,7 +3002,13 @@ class ExpendedoraGUI:
             pass
         self._cancel_after("_after_id")
         self._cancel_after("_after_fast_status_id")
-        self._after_sincronizar_pendiente = False
+        self._cancel_after("_gui_poll_after_id")
+        self._gui_sync_scheduled = False
+        while True:
+            try:
+                self._gui_main_queue.get_nowait()
+            except queue.Empty:
+                break
         if destroy_root:
             try:
                 self.root.destroy()
