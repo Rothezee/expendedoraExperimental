@@ -149,11 +149,6 @@ class ExpendedoraGUI:
         self.contadores_parcial = self.counter_service.default_counters()
         self._sync_counter_aliases()
 
-
-        # Flag para controlar si se realizó un cierre del día
-        self.cierre_realizado = False
-        self.contadores_parciales_pre_cierre = {}
-        
         # --- ANTI-FLOOD: evita encolar root.after duplicados y guardar config en cada ficha ---
         self._after_sincronizar_pendiente = False  # True si ya hay un callback en cola
         self._guardar_config_timer = None          # Timer para debounce de guardar_configuracion
@@ -897,13 +892,22 @@ class ExpendedoraGUI:
     def _sync_counter_aliases(self):
         """
         Alias legacy temporal:
-        - contadores         -> contadores_global
-        - contadores_apertura-> contadores_global
+        - contadores         -> contadores_parcial (sesión / GUI operativa)
+        - contadores_apertura-> contadores_global (cierre diario)
         - contadores_parciales -> contadores_parcial
         """
-        self.contadores = self.contadores_global
+        self.contadores = self.contadores_parcial
         self.contadores_apertura = self.contadores_global
         self.contadores_parciales = self.contadores_parcial
+
+    def _increment_contador_operacion(self, key, amount=1):
+        """Incrementa un contador en sesión (GUI) y en acumulado global (cierre diario)."""
+        if key == "dinero_ingresado":
+            self.contadores_parcial[key] = float(self.contadores_parcial.get(key, 0)) + float(amount)
+            self.contadores_global[key] = float(self.contadores_global.get(key, 0)) + float(amount)
+        else:
+            self.contadores_parcial[key] = int(self.contadores_parcial.get(key, 0)) + int(amount)
+            self.contadores_global[key] = int(self.contadores_global.get(key, 0)) + int(amount)
 
     def _apply_kiosk_window(self):
         """
@@ -1293,12 +1297,13 @@ class ExpendedoraGUI:
             fichas_restantes_hw = shared_buffer.get_fichas_restantes()
             fichas_expendidas_hw = shared_buffer.get_fichas_expendidas()
 
-            nuevo_total = self.inicio_fichas_expendidas + fichas_expendidas_hw
+            nuevo_parcial = self.inicio_parcial_fichas + fichas_expendidas_hw
+            nuevo_global = self.inicio_apertura_fichas + fichas_expendidas_hw
 
             contadores_cambiaron = False
-            if nuevo_total != self.contadores["fichas_expendidas"]:
-                self.contadores["fichas_expendidas"] = nuevo_total
-                self.contadores_parcial["fichas_expendidas"] = self.inicio_parcial_fichas + fichas_expendidas_hw
+            if nuevo_parcial != self.contadores_parcial["fichas_expendidas"]:
+                self.contadores_parcial["fichas_expendidas"] = nuevo_parcial
+                self.contadores_global["fichas_expendidas"] = nuevo_global
                 contadores_cambiaron = True
 
             if fichas_restantes_hw != self.contadores["fichas_restantes"]:
@@ -1700,7 +1705,6 @@ class ExpendedoraGUI:
     def _recalcular_bases_contadores(self):
         """Base + sesión en RAM: evita doble conteo tras recuperación."""
         sesion = int(shared_buffer.get_fichas_expendidas())
-        self.inicio_fichas_expendidas = int(self.contadores["fichas_expendidas"]) - sesion
         self.inicio_apertura_fichas = int(self.contadores_global["fichas_expendidas"]) - sesion
         self.inicio_parcial_fichas = int(self.contadores_parcial["fichas_expendidas"]) - sesion
 
@@ -1710,8 +1714,8 @@ class ExpendedoraGUI:
 
         self.contadores["fichas_restantes"] = int(shared_buffer.get_fichas_restantes())
         shared_buffer.set_fichas_restantes(self.contadores["fichas_restantes"], immediate=False)
-        shared_buffer.set_fichas_expendidas(int(self.contadores["fichas_expendidas"]), immediate=False)
-        shared_buffer.set_r_cuenta(float(self.contadores["dinero_ingresado"]), immediate=False)
+        shared_buffer.set_fichas_expendidas(int(self.contadores_global["fichas_expendidas"]), immediate=False)
+        shared_buffer.set_r_cuenta(float(self.contadores_parcial["dinero_ingresado"]), immediate=False)
         shared_buffer.register_gui_counters(
             self.contadores_global, self.contadores_global, self.contadores_parcial
         )
@@ -1843,7 +1847,6 @@ class ExpendedoraGUI:
             return
 
         print(f"[GUI] Primera sesión del día ({hoy}) -> apertura automática")
-        self.cierre_realizado = False
 
         # Nuevo ciclo diario
         self.contadores_global = self.counter_service.default_counters()
@@ -2765,15 +2768,12 @@ class ExpendedoraGUI:
             # Cargar en buffer de inmediato (no optimista: evita persistir 0)
             self._cargar_fichas_en_buffer(cantidad_fichas)
 
-            # Actualizar contadores
+            # Actualizar contadores (sesión + global)
             dinero = cantidad_fichas * self.valor_ficha
-            self.contadores["dinero_ingresado"] += dinero
-            self.contadores_parcial["dinero_ingresado"] += dinero
+            self._increment_contador_operacion("dinero_ingresado", dinero)
+            self._increment_contador_operacion("fichas_normales", cantidad_fichas)
 
-            self.contadores["fichas_normales"] += cantidad_fichas
-            self.contadores_parcial["fichas_normales"] += cantidad_fichas
-
-            shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"], immediate=False)
+            shared_buffer.set_r_cuenta(self.contadores_parcial["dinero_ingresado"], immediate=False)
 
             self._persistir_estado_critico("expender_fichas")
             self.contadores_labels["dinero_ingresado"].config(text=f"${self.contadores['dinero_ingresado']:.2f}")
@@ -2804,9 +2804,8 @@ class ExpendedoraGUI:
 
             self._cargar_fichas_en_buffer(cantidad_fichas)
 
-            # Actualizar contadores de devolución
-            self.contadores["fichas_devolucion"] += cantidad_fichas
-            self.contadores_parcial["fichas_devolucion"] += cantidad_fichas
+            # Actualizar contadores de devolución (sesión + global)
+            self._increment_contador_operacion("fichas_devolucion", cantidad_fichas)
 
             self._persistir_estado_critico("devolucion_fichas")
             
@@ -2841,9 +2840,8 @@ class ExpendedoraGUI:
 
             self._cargar_fichas_en_buffer(cantidad_fichas)
 
-            # Actualizar contadores de cambio
-            self.contadores["fichas_cambio"] += cantidad_fichas
-            self.contadores_parcial["fichas_cambio"] += cantidad_fichas
+            # Actualizar contadores de cambio (sesión + global)
+            self._increment_contador_operacion("fichas_cambio", cantidad_fichas)
 
             self._persistir_estado_critico("cambio_fichas")
             
@@ -2901,24 +2899,16 @@ class ExpendedoraGUI:
             payload=cierre_info,
             descripcion="Cierre",
         )
-        
-        # IMPORTANTE: Guardar los contadores parciales ANTES de resetear
-        # para que el subcierre tenga los datos correctos
-        self.contadores_parciales_pre_cierre = self.contadores_parcial.copy()
 
+        # Resetear solo acumulado global (cierre diario). La sesión del cajero
+        # se mantiene hasta Cerrar sesión para GUI y subcierre de caja.
         self.contadores_global = self.counter_service.default_counters()
-        self.contadores_parcial = self.counter_service.default_counters()
         self._sync_counter_aliases()
-        
-        # Ajustar bases para que coincidan con el reset (Base = 0 - HW_Actual)
+
         hw_actual = shared_buffer.get_fichas_expendidas()
-        self.inicio_fichas_expendidas = -hw_actual
         self.inicio_apertura_fichas = -hw_actual
-        self.inicio_parcial_fichas = -hw_actual
-        
-        # Marcar que se realizó un cierre para evitar doble reporte en cerrar_sesion
-        self.cierre_realizado = True
-        
+
+        self.actualizar_contadores_gui()
         self._persistir_estado_critico("cierre_dia")
 
     def realizar_cierre_parcial(self):
@@ -2997,25 +2987,10 @@ class ExpendedoraGUI:
 
     def cerrar_sesion(self):
         try:
-            # Determinar qué contadores usar para el subcierre
-            # Si se hizo un cierre del día, usar los contadores guardados antes del cierre
-            # Si NO se hizo cierre, usar los contadores parciales actuales
-            if hasattr(self, 'cierre_realizado') and self.cierre_realizado:
-                contadores_a_enviar = getattr(self, 'contadores_parciales_pre_cierre', {
-                    "fichas_expendidas": 0,
-                    "dinero_ingresado": 0,
-                    "promo1_contador": 0,
-                    "promo2_contador": 0,
-                    "promo3_contador": 0,
-                    "fichas_devolucion": 0,
-                    "fichas_normales": 0,
-                    "fichas_promocion": 0,
-                    "fichas_cambio": 0
-                })
-                print("[GUI] Usando contadores pre-cierre para subcierre")
-            else:
-                contadores_a_enviar = self.contadores_parcial
-                print("[GUI] Usando contadores parciales actuales para subcierre")
+            # Subcierre de caja: reporta la sesión actual del cajero, incluso si
+            # ya se hizo el cierre diario (contadores parciales se conservan hasta aquí).
+            contadores_a_enviar = self.contadores_parcial
+            print("[GUI] Usando contadores parciales actuales para subcierre")
 
             # Best-effort: no bloquear logout si falla remoto/local.
             try:
@@ -3042,7 +3017,6 @@ class ExpendedoraGUI:
                 shared_buffer.set_r_cuenta(0)
                 shared_buffer.set_cuenta(0)
                 # Mantener global acumulado entre sesiones de cajero.
-                self.inicio_fichas_expendidas = int(self.contadores_global.get("fichas_expendidas", 0))
                 self.inicio_apertura_fichas = int(self.contadores_global.get("fichas_expendidas", 0))
                 # Reiniciar solo la base parcial para la nueva sesión.
                 self.inicio_parcial_fichas = 0
@@ -3111,19 +3085,15 @@ class ExpendedoraGUI:
         if label is not None:
             label.config(text=f"{restantes}")
 
-        # Aumentar el dinero ingresado según el precio de la promoción
+        # Aumentar el dinero ingresado según el precio de la promoción (sesión + global)
         precio = self.promociones[promo]["precio"]
-        self.contadores["dinero_ingresado"] += precio
-        self.contadores_parcial["dinero_ingresado"] += precio
-
-        # Registrar fichas de promoción
-        self.contadores["fichas_promocion"] += fichas
-        self.contadores_parcial["fichas_promocion"] += fichas
+        self._increment_contador_operacion("dinero_ingresado", precio)
+        self._increment_contador_operacion("fichas_promocion", fichas)
 
         self.contadores_labels["dinero_ingresado"].config(text=f"${self.contadores['dinero_ingresado']:.2f}")
 
-        # **SOLUCIÓN**: Actualizar el buffer compartido para que el core lo vea
-        shared_buffer.set_r_cuenta(self.contadores["dinero_ingresado"], immediate=False)
+        # Telemetría y core usan r_cuenta de sesión
+        shared_buffer.set_r_cuenta(self.contadores_parcial["dinero_ingresado"], immediate=False)
 
         # Diccionario para simular el switch
         promo_contadores = {
@@ -3134,8 +3104,7 @@ class ExpendedoraGUI:
 
         # Incrementar el contador de la promoción correspondiente
         if promo in promo_contadores:
-            self.contadores[promo_contadores[promo]] += 1
-            self.contadores_parcial[promo_contadores[promo]] += 1
+            self._increment_contador_operacion(promo_contadores[promo], 1)
             # Estos labels fueron diseñados para mostrar solo el valor numérico.
             self.contadores_labels[promo_contadores[promo]].config(text=f"{self.contadores[promo_contadores[promo]]}")
         else:

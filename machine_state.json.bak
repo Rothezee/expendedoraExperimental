@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": 4000,
-  "updated_at": "2026-05-26 21:11:43",
+  "revision": 4467,
+  "updated_at": "2026-05-27 12:20:46",
   "reason": "flush_pending",
   "buffer": {
     "fichas_restantes": 0,

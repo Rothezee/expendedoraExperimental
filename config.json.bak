@@ -78,10 +78,10 @@
       "database": "sistemadeadministracion"
     },
     "production": {
-      "host": "2a02:4780:13:1234::79",
+      "host": "srv1596.hstgr.io",
       "port": 3306,
       "user": "u868087036_administrador",
-      "password": "39090169aA",
+      "password": "Xh=4:Dc8oG;1",
       "database": "u868087036_sistemadeadmin"
     }
   },
@@ -101,7 +101,7 @@
     ]
   },
   "operacion": {
-    "ultima_apertura_fecha": "2026-05-26"
+    "ultima_apertura_fecha": "2026-05-27"
   },
   "atajos": {
     "promociones": {
@@ -132,7 +132,7 @@
     "wifi_ssid": "",
     "wifi_password": ""
   },
-  "updated_at": "2026-05-26 21:11:43",
+  "updated_at": "2026-05-27 12:20:45",
   "contadores_global": {
     "fichas_expendidas": 0,
     "dinero_ingresado": 0.0,
