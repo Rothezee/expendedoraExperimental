@@ -303,10 +303,12 @@ class Esp32Bridge:
     def _send_sale_report_if_done(self) -> None:
         restantes = int(shared_buffer.get_fichas_restantes())
         fichas_sesion = int(shared_buffer.get_fichas_expendidas())
-        if fichas_sesion <= 0:
-            self._last_reported_session_fichas = 0
+        # Enviar solo cuando la tanda termina (restantes == 0).
+        if restantes != 0:
+            if fichas_sesion <= 0:
+                self._last_reported_session_fichas = 0
             return
-        if restantes > 0:
+        if fichas_sesion <= 0:
             return
         if fichas_sesion == self._last_reported_session_fichas:
             return
@@ -474,17 +476,22 @@ class Esp32Bridge:
                 mcu_remaining = -1
 
             token_counted = False
+            counted_delta = 0
             if mcu_remaining >= 0:
                 # MCU manda remaining real tras contar token; usarlo evita drift PC↔MCU.
                 new_remaining = max(0, mcu_remaining)
+                counted_delta = max(0, pc_before - new_remaining)
                 shared_buffer.set_fichas_restantes(new_remaining, immediate=False)
-                token_counted = new_remaining < pc_before
+                if counted_delta > 0:
+                    shared_buffer.registrar_fichas_expendidas(counted_delta, immediate=False)
+                    token_counted = True
             else:
                 if pc_before <= 0:
                     self._dbg("SENSOR", f"TOKEN ignorado (PC ya en 0) mcu_remaining={evt.get('remaining')}")
                     return
                 token_counted = bool(shared_buffer.decrementar_fichas_restantes(immediate=False))
                 new_remaining = int(shared_buffer.get_fichas_restantes())
+                counted_delta = 1 if token_counted else 0
 
             self._last_sent_target = int(shared_buffer.get_fichas_restantes())
             if self._last_sent_target > 0:
@@ -519,11 +526,11 @@ class Esp32Bridge:
                 "SENSOR",
                 f"TOKEN tolva={hopper_id} mcu_remaining={mcu_remaining_raw} "
                 f"pc_before={pc_before} pc_restantes={shared_buffer.get_fichas_restantes()} "
-                f"counted={1 if token_counted else 0}",
+                f"counted={1 if token_counted else 0} delta={counted_delta}",
             )
             print(
                 f"[ESP32] TOKEN tolva {hopper_id} | restantes={shared_buffer.get_fichas_restantes()} "
-                f"(counted={1 if token_counted else 0})"
+                f"(counted={1 if token_counted else 0} delta={counted_delta})"
             )
             shared_buffer.persist_now("token")
             self._send_sale_report_if_done()

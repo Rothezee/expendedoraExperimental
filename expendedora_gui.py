@@ -3035,18 +3035,17 @@ class ExpendedoraGUI:
             except Exception as exc:
                 print(f"[GUI] Aviso: no se pudo generar/enviar subcierre en logout: {exc}")
 
-            self.contadores_global = self.counter_service.default_counters()
             self.contadores_parcial = self.counter_service.default_counters()
             self._sync_counter_aliases()
             try:
                 shared_buffer.reset_fichas_expendidas_sesion()
-                shared_buffer.set_fichas_expendidas(0)
                 shared_buffer.set_r_cuenta(0)
                 shared_buffer.set_cuenta(0)
-                hw_actual = shared_buffer.get_fichas_expendidas_total()
-                self.inicio_fichas_expendidas = -hw_actual
-                self.inicio_apertura_fichas = -hw_actual
-                self.inicio_parcial_fichas = -hw_actual
+                # Mantener global acumulado entre sesiones de cajero.
+                self.inicio_fichas_expendidas = int(self.contadores_global.get("fichas_expendidas", 0))
+                self.inicio_apertura_fichas = int(self.contadores_global.get("fichas_expendidas", 0))
+                # Reiniciar solo la base parcial para la nueva sesión.
+                self.inicio_parcial_fichas = 0
             except Exception as exc:
                 print(f"[GUI] Aviso reseteando buffer de sesión: {exc}")
             try:

@@ -130,6 +130,23 @@ class MachineState:
 
         return False
 
+    def registrar_fichas_expendidas(self, cantidad: int = 1) -> int:
+
+        try:
+            qty = int(cantidad)
+        except Exception:
+            qty = 0
+        if qty <= 0:
+            return 0
+
+        with self._lock:
+
+            self._data["fichas_expendidas"] += qty
+
+            self._data["fichas_expendidas_sesion"] += qty
+
+        return qty
+
 
 
     def snapshot(self):
@@ -420,6 +437,23 @@ def decrementar_fichas_restantes(*, immediate: bool = True):
             _schedule_state_persist()
 
     return ok
+
+
+def registrar_fichas_expendidas(cantidad: int = 1, *, immediate: bool = True) -> int:
+
+    applied = _state.registrar_fichas_expendidas(cantidad)
+
+    if applied > 0:
+
+        if immediate:
+
+            persist_now("token")
+
+        else:
+
+            _schedule_state_persist()
+
+    return applied
 
 
 
