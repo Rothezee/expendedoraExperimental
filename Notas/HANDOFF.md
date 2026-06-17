@@ -1,7 +1,7 @@
-# HANDOFF - Version funcional
+# HANDOFF - v2.0.0
 
-Fecha: 2026-05-26
-Estado declarado: VERSION FUNCIONAL (estable para operacion)
+Fecha: 2026-06-17
+Estado declarado: v2.0.0 — arquitectura en capas, Arduino estable, destrabe desde ayuda
 
 ## Objetivo general alcanzado
 
