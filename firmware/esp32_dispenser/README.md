@@ -8,12 +8,21 @@ Control del motor y sensor óptico. Comunicación con la PC por **USB nativo** (
 
 | Pin Arduino | Función |
 |-------------|---------|
-| **13** (D13) | Motor adelante → IN relé 1 |
-| **11** (D11) | Motor atrás / reversa → IN relé 2 |
-| **9** (D9) | Sensor óptico (`INPUT_PULLUP`) |
+| **10** (D10) | Motor adelante → IN relé 1 |
+| **12** (D12) | Motor atrás / reversa → IN relé 2 |
+| **9** (D9) | Sensor óptico (`INPUT` si `sensor_blocked_high`, si no `INPUT_PULLUP`) |
 | **GND** | Tierra común con relés y fuente del motor |
 
-**Nota:** D13 comparte el LED integrado del Uno. Con relés **active-LOW** (`motor_active_low: true`), motor apagado = pin HIGH = LED puede quedar tenue; es normal.
+**Nota:** Los nombres internos del `.ino` están en español (`fichasRestantes`, `ejecutarDestrabe`, etc.). El protocolo JSON sigue en inglés (`TOKEN`, `SET_TARGET`, …).
+
+### Destrabe automático
+
+En `config.json` → `maquina.destrabe`:
+
+- `max_intentos`: **3** (retrocesos automáticos por timeout antes de `JAM`)
+- `retroceso_s`, `cooldown_s`, `auto_on_timeout`, `enabled`
+
+Tras el JAM, el cajero usa el botón **Destrabar** en la GUI (`UNJAM` manual, sin límite).
 
 No alimentar el motor desde el Arduino. Usar relés + fuente aparte.
 
@@ -46,7 +55,7 @@ Prueba manual:
 
 ```json
 {"dir":"cmd","type":"HELLO","v":1}
-{"dir":"cmd","type":"CONFIG","hopper":{"id":1,"motor_pin":13,"motor_pin_rev":11,"motor_active_low":true,"sensor_pin":9,"sensor_bouncetime_ms":8,"calibracion":{"pulso_min_s":0.05,"pulso_max_s":0.5,"timeout_motor_s":2.0}}}
+{"dir":"cmd","type":"CONFIG","hopper":{"id":1,"motor_pin":10,"motor_pin_rev":12,"motor_active_low":true,"sensor_pin":9,"sensor_bouncetime_ms":8,"calibracion":{"pulso_min_s":0.05,"pulso_max_s":0.5,"timeout_motor_s":2.0}}}
 {"dir":"cmd","type":"SET_TARGET","remaining":3}
 ```
 
@@ -74,8 +83,8 @@ python scripts\probe_hello.py COM3
 },
 "maquina": {
   "hoppers": [{
-    "motor_pin": 13,
-    "motor_pin_rev": 11,
+    "motor_pin": 10,
+    "motor_pin_rev": 12,
     "sensor_pin": 9,
     "motor_active_low": true
   }]
@@ -94,7 +103,7 @@ En `config.h`: `#define TEST_STANDALONE 1` para probar sin PC (ver comentarios e
 
 ## Protocolo
 
-Ver `infra/esp32_protocol.py`.
+Ver `expendedora/logic/hardware/protocol.py`.
 
 Comandos: `HELLO`, `CONFIG`, `SET_TARGET`, `SELECT_HOPPER`, `UNJAM`, `STOP`, `SIMULATE`, `PING`.
 

@@ -2,7 +2,7 @@
 
 import unittest
 
-from services.counter_service import CounterService
+from expendedora.logic.services.counter_service import CounterService
 
 
 class SessionGlobalCounterLogic(unittest.TestCase):

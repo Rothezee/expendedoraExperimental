@@ -1,0 +1,36 @@
+---
+description: Persistencia JSON, MySQL y rutas de datos
+globs: expendedora/persistence/**
+alwaysApply: false
+---
+
+# Persistencia
+
+## Rutas (única fuente: `paths.py`)
+
+| Archivo | Constante |
+|---------|-----------|
+| `config.json` | `CONFIG_FILE` |
+| `config.local.json` | `CONFIG_LOCAL_FILE` |
+| `machine_state.json` | `STATE_FILE` |
+| `pending_cashier_sync.json` | `PENDING_SYNC_FILE` |
+
+Directorio: `expendedora/persistence/json/`
+
+## Writers
+
+- Estado operativo: `StateRepository` / `state_store.py` (escritura atómica + `.bak`)
+- Config: `ConfigRepository`
+- MySQL cajeros: `cashier_database.py` + `AuthRepositoryMySQL`
+- HTTP: `remote/telemetry_repository.py`, `remote/session_api_repository.py`
+
+## MySQL
+
+- Perfiles `mysql.local` y `mysql.production` en config
+- `require_remote=True` → solo `production` (registro remoto de cajeros)
+- Credenciales sensibles en `config.local.json` o env `MYSQL_LOCAL_*` / `MYSQL_PRODUCTION_*`
+
+## Reglas
+
+- No escribir `registro.json` (solo lectura legacy en `recover_state`)
+- `migrate_legacy_data_files()` corre en bootstrap; no duplicar lógica de migración

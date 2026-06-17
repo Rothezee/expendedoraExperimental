@@ -1,7 +1,7 @@
 /*
  * esp32_dispenser.ino — Expendedora (motor + sensor óptico)
  * Placa: Arduino Uno (USB nativo, 115200 baud, JSON por línea).
- * Protocolo PC: infra/esp32_protocol.py
+ * Protocolo PC (claves JSON en inglés): expendedora/logic/hardware/protocol.py
  *
  * Arduino IDE: Placa "Arduino Uno", librería ArduinoJson v7.
  */
@@ -12,193 +12,205 @@
 #include <string.h>
 #include "config.h"
 
+/* --- Tipos de dominio (nombres en español) --- */
+
 typedef struct {
   int id;
-  int motorPin;
-  int motorRevPin;
-  int sensorPin;
-  bool motorActiveLow;
-  int sensorBounceMs;
+  int pinMotor;
+  int pinMotorRev;
+  int pinSensor;
+  bool motorActivoBajo;
+  bool sensorBloqueadoAlto;
+  int reboteSensorMs;
   float pulsoMinS;
   float pulsoMaxS;
   float timeoutMotorS;
-} HopperConfig;
+} ConfigTolva;
 
 typedef struct {
-  bool enabled;
-  bool autoOnTimeout;
+  bool habilitado;
+  bool autoEnTimeout;
   float retrocesoS;
   int maxIntentos;
-  float cooldownS;
-} DestrabeConfig;
+  float enfriamientoS;
+} ConfigDestrabe;
 
-static HopperConfig hoppers[MAX_HOPPERS];
-static int activeHopperIdx = 0;
-static DestrabeConfig destrabeCfg;
-static int targetRemaining = 0;
-static bool motorOn = false;
-static unsigned long motorOnSinceMs = 0;
-static unsigned long motorArmedAtMs = 0;
-static const unsigned long MOTOR_SENSOR_GRACE_MS = 180;
-// Si este gap queda muy alto, el MCU "pierde" tokens válidos y sobre-dispensa.
-static const unsigned long MIN_TOKEN_GAP_MS = 120;
-static int destrabeAttempts = 0;
-static unsigned long lastDestrabeMs = 0;
-static bool jammed = false;
-static bool configReady = false;
-static bool debugMotorSensor = false;
-static unsigned long lastSensorDbgMs = 0;
+/* --- Estado global --- */
 
-static bool sensorPulseActive = false;
-static unsigned long pulseStartMs = 0;
-static unsigned long lastCountMs = 0;
-static int lastSensorState = HIGH;
-static bool unjamInProgress = false;
+static ConfigTolva tolvas[MAX_HOPPERS];
+static int indiceTolvaActiva = 0;
+static ConfigDestrabe cfgDestrabe;
+static int fichasRestantes = 0;
+static bool motorEncendido = false;
+static unsigned long motorEncendidoDesdeMs = 0;
+static unsigned long motorArmadoDesdeMs = 0;
+static const unsigned long GRACIA_SENSOR_MOTOR_MS = 180;
+static const unsigned long SEPARACION_MINIMA_FICHA_MS = 120;
+static int intentosDestrabe = 0;
+static unsigned long ultimoDestrabeMs = 0;
+static bool tolvaTrabada = false;
+static bool configLista = false;
+static bool depurarMotorSensor = false;
+static unsigned long ultimoDepuracionSensorMs = 0;
 
-static void processSensor(void);
+static bool pulsoSensorActivo = false;
+static unsigned long pulsoInicioMs = 0;
+static unsigned long ultimoConteoMs = 0;
+static int ultimoEstadoSensor = HIGH;
+static bool destrabeEnCurso = false;
+static bool modoPrueba = false;
 
-static char rxLine[513];
-static size_t rxLen = 0;
+static void procesarSensor(void);
 
-static void initHopperDefaults(HopperConfig *h, int id) {
-  h->id = id;
-  h->motorPin = DEFAULT_MOTOR_PIN;
-  h->motorRevPin = DEFAULT_MOTOR_REV_PIN;
-  h->sensorPin = DEFAULT_SENSOR_PIN;
-  h->motorActiveLow = (DEFAULT_MOTOR_ACTIVE_LOW != 0);
-  h->sensorBounceMs = DEFAULT_SENSOR_BOUNCE_MS;
-  h->pulsoMinS = DEFAULT_PULSO_MIN_S;
-  h->pulsoMaxS = DEFAULT_PULSO_MAX_S;
-  h->timeoutMotorS = DEFAULT_TIMEOUT_MOTOR_S;
+static char lineaRx[513];
+static size_t largoLineaRx = 0;
+
+/* --- Tolvas --- */
+
+static void initTolvaPorDefecto(ConfigTolva *t, int id) {
+  t->id = id;
+  t->pinMotor = DEFAULT_MOTOR_PIN;
+  t->pinMotorRev = DEFAULT_MOTOR_REV_PIN;
+  t->pinSensor = DEFAULT_SENSOR_PIN;
+  t->motorActivoBajo = (DEFAULT_MOTOR_ACTIVE_LOW != 0);
+  t->sensorBloqueadoAlto = (DEFAULT_SENSOR_BLOCKED_HIGH != 0);
+  t->reboteSensorMs = DEFAULT_SENSOR_BOUNCE_MS;
+  t->pulsoMinS = DEFAULT_PULSO_MIN_S;
+  t->pulsoMaxS = DEFAULT_PULSO_MAX_S;
+  t->timeoutMotorS = DEFAULT_TIMEOUT_MOTOR_S;
 }
 
-static HopperConfig *activeHopper(void) {
-  return &hoppers[activeHopperIdx];
+static ConfigTolva *tolvaActiva(void) {
+  return &tolvas[indiceTolvaActiva];
 }
 
-static void dbg(const char *cat, const char *msg) {
-  if (!debugMotorSensor) return;
+/* --- Depuración --- */
+
+static void depurar(const char *categoria, const char *mensaje) {
+  if (!depurarMotorSensor) return;
   Serial.print("[DBG ");
-  Serial.print(cat);
+  Serial.print(categoria);
   Serial.print("] ");
-  Serial.println(msg);
+  Serial.println(mensaje);
 }
 
-static void dbgFmt(const char *cat, const char *fmt, ...) {
-  if (!debugMotorSensor) return;
+static void depurarFmt(const char *categoria, const char *fmt, ...) {
+  if (!depurarMotorSensor) return;
   char buf[96];
   va_list args;
   va_start(args, fmt);
   vsnprintf(buf, sizeof(buf), fmt, args);
   va_end(args);
-  dbg(cat, buf);
+  depurar(categoria, buf);
 }
 
-static bool sensorDebugOn(void) {
-  return (DEBUG_SENSOR != 0) || debugMotorSensor;
+static bool depuracionSensorActiva(void) {
+  return (DEBUG_SENSOR != 0) || depurarMotorSensor;
 }
 
-static void dbgSensor(const char *msg) {
-  if (!sensorDebugOn()) return;
+static void depurarSensor(const char *mensaje) {
+  if (!depuracionSensorActiva()) return;
   Serial.print("[DBG SENSOR] ");
-  Serial.println(msg);
+  Serial.println(mensaje);
 }
 
-static void dbgSensorFmt(const char *fmt, ...) {
-  if (!sensorDebugOn()) return;
+static void depurarSensorFmt(const char *fmt, ...) {
+  if (!depuracionSensorActiva()) return;
   char buf[128];
   va_list args;
   va_start(args, fmt);
   vsnprintf(buf, sizeof(buf), fmt, args);
   va_end(args);
-  dbgSensor(buf);
+  depurarSensor(buf);
 }
 
-static int motorOnLevel(const HopperConfig *h) {
-  return h->motorActiveLow ? LOW : HIGH;
+/* --- Motor y relés --- */
+
+static int nivelMotorEncendido(const ConfigTolva *t) {
+  return t->motorActivoBajo ? LOW : HIGH;
 }
 
-static int motorOffLevel(const HopperConfig *h) {
-  return h->motorActiveLow ? HIGH : LOW;
+static int nivelMotorApagado(const ConfigTolva *t) {
+  return t->motorActivoBajo ? HIGH : LOW;
 }
 
-static void emitEvent(const char *type) {
+static void emitirEvento(const char *tipo) {
   StaticJsonDocument<192> doc;
   doc["dir"] = "evt";
-  doc["type"] = type;
-  doc["hopper_id"] = activeHopper()->id;
-  doc["remaining"] = targetRemaining;
+  doc["type"] = tipo;
+  doc["hopper_id"] = tolvaActiva()->id;
+  doc["remaining"] = fichasRestantes;
   serializeJson(doc, Serial);
   Serial.println();
 }
 
-static void emitEventMsg(const char *type, const char *msg) {
+static void emitirEventoConMensaje(const char *tipo, const char *mensaje) {
   StaticJsonDocument<192> doc;
   doc["dir"] = "evt";
-  doc["type"] = type;
-  doc["hopper_id"] = activeHopper()->id;
-  doc["remaining"] = targetRemaining;
-  doc["message"] = msg;
+  doc["type"] = tipo;
+  doc["hopper_id"] = tolvaActiva()->id;
+  doc["remaining"] = fichasRestantes;
+  doc["message"] = mensaje;
   serializeJson(doc, Serial);
   Serial.println();
 }
 
-static void motorForward(const HopperConfig *h) {
-  if (h->motorRevPin >= 0) digitalWrite(h->motorRevPin, motorOffLevel(h));
-  digitalWrite(h->motorPin, motorOnLevel(h));
+static void motorAdelante(const ConfigTolva *t) {
+  if (t->pinMotorRev >= 0) digitalWrite(t->pinMotorRev, nivelMotorApagado(t));
+  digitalWrite(t->pinMotor, nivelMotorEncendido(t));
 }
 
-static void motorReverse(const HopperConfig *h) {
-  digitalWrite(h->motorPin, motorOffLevel(h));
-  if (h->motorRevPin >= 0) digitalWrite(h->motorRevPin, motorOnLevel(h));
+static void motorAtras(const ConfigTolva *t) {
+  digitalWrite(t->pinMotor, nivelMotorApagado(t));
+  if (t->pinMotorRev >= 0) digitalWrite(t->pinMotorRev, nivelMotorEncendido(t));
 }
 
-static void motorOffPins(const HopperConfig *h) {
-  digitalWrite(h->motorPin, motorOffLevel(h));
-  if (h->motorRevPin >= 0) digitalWrite(h->motorRevPin, motorOffLevel(h));
+static void motorApagarPines(const ConfigTolva *t) {
+  digitalWrite(t->pinMotor, nivelMotorApagado(t));
+  if (t->pinMotorRev >= 0) digitalWrite(t->pinMotorRev, nivelMotorApagado(t));
 }
 
 #if TEST_STANDALONE
-static void testLedWrite(bool on) {
+static void escribirLedPrueba(bool encendido) {
   pinMode(TEST_LED_PIN, OUTPUT);
-  int level = on ? (TEST_LED_ACTIVE_HIGH ? HIGH : LOW) : (TEST_LED_ACTIVE_HIGH ? LOW : HIGH);
-  digitalWrite(TEST_LED_PIN, level);
-  if (sensorDebugOn()) {
-    dbgSensorFmt("LED GPIO%d -> %s (write=%d read=%d)", TEST_LED_PIN, on ? "ON" : "OFF", level,
-                 digitalRead(TEST_LED_PIN));
+  int nivel = encendido ? (TEST_LED_ACTIVE_HIGH ? HIGH : LOW) : (TEST_LED_ACTIVE_HIGH ? LOW : HIGH);
+  digitalWrite(TEST_LED_PIN, nivel);
+  if (depuracionSensorActiva()) {
+    depurarSensorFmt("LED GPIO%d -> %s (write=%d read=%d)", TEST_LED_PIN, encendido ? "ON" : "OFF", nivel,
+                     digitalRead(TEST_LED_PIN));
   }
 }
 
-static void testBootBlink(void) {
+static void parpadeoArranquePrueba(void) {
 #if TEST_BOOT_BLINK
   pinMode(TEST_LED_PIN, OUTPUT);
   for (int i = 0; i < 5; i++) {
-    testLedWrite(true);
+    escribirLedPrueba(true);
     delay(200);
-    testLedWrite(false);
+    escribirLedPrueba(false);
     delay(200);
   }
-  if (sensorDebugOn()) {
-    dbgSensorFmt("BOOT blink listo en GPIO%d (ACTIVE_HIGH=%d)", TEST_LED_PIN, TEST_LED_ACTIVE_HIGH);
+  if (depuracionSensorActiva()) {
+    depurarSensorFmt("BOOT blink listo en GPIO%d (ACTIVE_HIGH=%d)", TEST_LED_PIN, TEST_LED_ACTIVE_HIGH);
   }
 #endif
 }
 #endif
 
-static void applyMotorOutput(const HopperConfig *h, bool on) {
+static void aplicarSalidaMotor(const ConfigTolva *t, bool encender) {
 #if TEST_STANDALONE
-  (void)h;
-  testLedWrite(on);
+  (void)t;
+  escribirLedPrueba(encender);
 #else
-  if (on) {
-    motorForward(h);
+  if (encender) {
+    motorAdelante(t);
   } else {
-    motorOffPins(h);
+    motorApagarPines(t);
   }
 #endif
 }
 
-static void forceRelaysOffSafe(void) {
+static void forzarRelesApagadosSeguro(void) {
 #if TEST_STANDALONE
   pinMode(TEST_LED_PIN, OUTPUT);
   digitalWrite(TEST_LED_PIN, TEST_LED_ACTIVE_HIGH ? LOW : HIGH);
@@ -212,277 +224,306 @@ static void forceRelaysOffSafe(void) {
 #endif
 }
 
-static void setMotorState(bool on) {
-  HopperConfig *h = activeHopper();
-  if (on && !configReady) {
-    dbg("MOTOR", "setMotorState(ON) bloqueado: sin CONFIG");
+static void setEstadoMotor(bool encender) {
+  ConfigTolva *t = tolvaActiva();
+  if (encender && !configLista) {
+    depurar("MOTOR", "encender bloqueado: sin CONFIG");
     return;
   }
-  if (on == motorOn) return;
-  motorOn = on;
-  if (on) {
-    dbgFmt("MOTOR", "ON pin=%d rev=%d target=%d", h->motorPin, h->motorRevPin, targetRemaining);
-    applyMotorOutput(h, true);
-    motorOnSinceMs = millis();
-    motorArmedAtMs = millis();
-    emitEvent("MOTOR_ON");
+  if (encender == motorEncendido) return;
+  motorEncendido = encender;
+  if (encender) {
+    depurarFmt("MOTOR", "ON pin=%d rev=%d objetivo=%d", t->pinMotor, t->pinMotorRev, fichasRestantes);
+    aplicarSalidaMotor(t, true);
+    motorEncendidoDesdeMs = millis();
+    motorArmadoDesdeMs = millis();
+    emitirEvento("MOTOR_ON");
   } else {
-    dbgFmt("MOTOR", "OFF pin=%d target=%d", h->motorPin, targetRemaining);
-    applyMotorOutput(h, false);
-    emitEvent("MOTOR_OFF");
+    depurarFmt("MOTOR", "OFF pin=%d objetivo=%d", t->pinMotor, fichasRestantes);
+    aplicarSalidaMotor(t, false);
+    emitirEvento("MOTOR_OFF");
   }
 }
 
-static void applyHopperPins(const HopperConfig *h) {
+static void aplicarPinesTolva(const ConfigTolva *t) {
 #if !TEST_STANDALONE
-  pinMode(h->motorPin, OUTPUT);
-  digitalWrite(h->motorPin, motorOffLevel(h));
+  pinMode(t->pinMotor, OUTPUT);
+  digitalWrite(t->pinMotor, nivelMotorApagado(t));
   delay(5);
-  digitalWrite(h->motorPin, motorOffLevel(h));
-  if (h->motorRevPin >= 0) {
-    pinMode(h->motorRevPin, OUTPUT);
-    digitalWrite(h->motorRevPin, motorOffLevel(h));
+  digitalWrite(t->pinMotor, nivelMotorApagado(t));
+  if (t->pinMotorRev >= 0) {
+    pinMode(t->pinMotorRev, OUTPUT);
+    digitalWrite(t->pinMotorRev, nivelMotorApagado(t));
     delay(5);
-    digitalWrite(h->motorRevPin, motorOffLevel(h));
+    digitalWrite(t->pinMotorRev, nivelMotorApagado(t));
   }
 #endif
-  pinMode(h->sensorPin, INPUT_PULLUP);
+  pinMode(t->pinSensor, t->sensorBloqueadoAlto ? INPUT : INPUT_PULLUP);
 }
 
-static void loadHopperFromJson(JsonObject hopper, int idx) {
+static void cargarTolvaDesdeJson(JsonObject hopper, int idx) {
   if (idx < 0 || idx >= MAX_HOPPERS) return;
-  HopperConfig *h = &hoppers[idx];
-  h->id = hopper["id"] | (idx + 1);
-  h->motorPin = hopper["motor_pin"] | DEFAULT_MOTOR_PIN;
+  ConfigTolva *t = &tolvas[idx];
+  t->id = hopper["id"] | (idx + 1);
+  t->pinMotor = hopper["motor_pin"] | DEFAULT_MOTOR_PIN;
   if (!hopper["motor_pin_rev"].isNull()) {
-    h->motorRevPin = hopper["motor_pin_rev"].as<int>();
+    t->pinMotorRev = hopper["motor_pin_rev"].as<int>();
   } else {
-    h->motorRevPin = -1;
+    t->pinMotorRev = -1;
   }
-  h->sensorPin = hopper["sensor_pin"] | DEFAULT_SENSOR_PIN;
-  h->motorActiveLow = hopper["motor_active_low"] | true;
-  h->sensorBounceMs = hopper["sensor_bouncetime_ms"] | DEFAULT_SENSOR_BOUNCE_MS;
+  t->pinSensor = hopper["sensor_pin"] | DEFAULT_SENSOR_PIN;
+  t->motorActivoBajo = hopper["motor_active_low"] | true;
+  t->sensorBloqueadoAlto = hopper["sensor_blocked_high"].isNull()
+                               ? (DEFAULT_SENSOR_BLOCKED_HIGH != 0)
+                               : hopper["sensor_blocked_high"].as<bool>();
+  t->reboteSensorMs = hopper["sensor_bouncetime_ms"] | DEFAULT_SENSOR_BOUNCE_MS;
   JsonObject cal = hopper["calibracion"];
   if (!cal.isNull()) {
-    h->pulsoMinS = cal["pulso_min_s"] | DEFAULT_PULSO_MIN_S;
-    h->pulsoMaxS = cal["pulso_max_s"] | DEFAULT_PULSO_MAX_S;
-    h->timeoutMotorS = cal["timeout_motor_s"] | DEFAULT_TIMEOUT_MOTOR_S;
+    t->pulsoMinS = cal["pulso_min_s"] | DEFAULT_PULSO_MIN_S;
+    t->pulsoMaxS = cal["pulso_max_s"] | DEFAULT_PULSO_MAX_S;
+    t->timeoutMotorS = cal["timeout_motor_s"] | DEFAULT_TIMEOUT_MOTOR_S;
   } else {
-    h->pulsoMinS = DEFAULT_PULSO_MIN_S;
-    h->pulsoMaxS = DEFAULT_PULSO_MAX_S;
-    h->timeoutMotorS = DEFAULT_TIMEOUT_MOTOR_S;
+    t->pulsoMinS = DEFAULT_PULSO_MIN_S;
+    t->pulsoMaxS = DEFAULT_PULSO_MAX_S;
+    t->timeoutMotorS = DEFAULT_TIMEOUT_MOTOR_S;
   }
-  if (h->sensorBounceMs <= 0) h->sensorBounceMs = DEFAULT_SENSOR_BOUNCE_MS;
-  applyHopperPins(h);
+  if (t->reboteSensorMs <= 0) t->reboteSensorMs = DEFAULT_SENSOR_BOUNCE_MS;
+  aplicarPinesTolva(t);
 }
 
-static void handleConfig(JsonDocument &doc) {
+/* --- Comandos CONFIG / SET_TARGET --- */
+
+static void manejarConfig(JsonDocument &doc) {
   if (doc["hopper"].is<JsonObject>()) {
-    loadHopperFromJson(doc["hopper"].as<JsonObject>(), activeHopperIdx);
+    cargarTolvaDesdeJson(doc["hopper"].as<JsonObject>(), indiceTolvaActiva);
   }
   if (doc["hoppers"].is<JsonArray>()) {
     JsonArray arr = doc["hoppers"].as<JsonArray>();
     int i = 0;
     for (JsonObject obj : arr) {
-      loadHopperFromJson(obj, i);
+      cargarTolvaDesdeJson(obj, i);
       i++;
       if (i >= MAX_HOPPERS) break;
     }
   }
   if (doc["destrabe"].is<JsonObject>()) {
     JsonObject d = doc["destrabe"];
-    destrabeCfg.enabled = d["enabled"] | true;
-    destrabeCfg.autoOnTimeout = d["auto_on_timeout"] | true;
-    destrabeCfg.retrocesoS = d["retroceso_s"] | 1.5f;
-    destrabeCfg.maxIntentos = d["max_intentos"] | 1;
-    destrabeCfg.cooldownS = d["cooldown_s"] | 2.0f;
+    cfgDestrabe.habilitado = d["enabled"] | true;
+    cfgDestrabe.autoEnTimeout = d["auto_on_timeout"] | true;
+    cfgDestrabe.retrocesoS = d["retroceso_s"] | 1.5f;
+    cfgDestrabe.maxIntentos = d["max_intentos"] | 3;
+    cfgDestrabe.enfriamientoS = d["cooldown_s"] | 2.0f;
   }
-  if (doc["debug"].is<bool>()) debugMotorSensor = doc["debug"].as<bool>();
-  jammed = false;
-  destrabeAttempts = 0;
+  if (doc["debug"].is<bool>()) depurarMotorSensor = doc["debug"].as<bool>();
+  tolvaTrabada = false;
+  intentosDestrabe = 0;
 #if TEST_STANDALONE
-  armTestStandalone();
+  armarPruebaStandalone();
 #else
-  targetRemaining = 0;
-  configReady = true;
-  setMotorState(false);
+  fichasRestantes = 0;
+  configLista = true;
+  setEstadoMotor(false);
 #endif
-  dbg("CONFIG", debugMotorSensor ? "READY debug=ON" : "READY debug=OFF");
-  emitEvent("READY");
+  ultimoEstadoSensor = digitalRead(tolvaActiva()->pinSensor);
+  depurarFmt("CONFIG", "sensor pin=%d blocked_high=%d (libre=0 tapado=1) raw=%s",
+               tolvaActiva()->pinSensor, tolvaActiva()->sensorBloqueadoAlto ? 1 : 0,
+               ultimoEstadoSensor == LOW ? "LOW(0)" : "HIGH(1)");
+  depurar("CONFIG", depurarMotorSensor ? "READY debug=ON" : "READY debug=OFF");
+  emitirEvento("READY");
 }
 
-static void handleSetTarget(int remaining) {
-  if (!configReady) {
-    dbg("MOTOR", "SET_TARGET ignorado: sin CONFIG");
+static void manejarObjetivoFichas(int restantes) {
+  if (!configLista) {
+    depurar("MOTOR", "SET_TARGET ignorado: sin CONFIG");
     return;
   }
-  dbgFmt("MOTOR", "SET_TARGET %d -> %d", targetRemaining, max(0, remaining));
-  targetRemaining = max(0, remaining);
-  jammed = false;
-  sensorPulseActive = false;
-  lastSensorState = digitalRead(activeHopper()->sensorPin);
-  lastCountMs = millis();
-  if (targetRemaining > 0) {
-    setMotorState(true);
+  depurarFmt("MOTOR", "SET_TARGET %d -> %d", fichasRestantes, max(0, restantes));
+  fichasRestantes = max(0, restantes);
+  modoPrueba = false;
+  tolvaTrabada = false;
+  pulsoSensorActivo = false;
+  ultimoEstadoSensor = digitalRead(tolvaActiva()->pinSensor);
+  ultimoConteoMs = millis();
+  if (fichasRestantes > 0) {
+    setEstadoMotor(true);
   } else {
-    setMotorState(false);
-    emitEvent("RUN_DONE");
+    setEstadoMotor(false);
+    emitirEvento("RUN_DONE");
   }
-  emitEvent("SYNC");
+  emitirEvento("SYNC");
 }
 
-static void doUnjam(float retrocesoS) {
-  HopperConfig *h = activeHopper();
-  setMotorState(false);
-  if (h->motorRevPin < 0) {
-    emitEvent("UNJAM_DONE");
+static void ejecutarDestrabe(float retrocesoS) {
+  ConfigTolva *t = tolvaActiva();
+  setEstadoMotor(false);
+  if (t->pinMotorRev < 0) {
+    emitirEvento("UNJAM_DONE");
     return;
   }
-  unjamInProgress = true;
-  motorReverse(h);
-  unsigned long reverseUntilMs = millis() + (unsigned long)(retrocesoS * 1000.0f);
-  while (millis() < reverseUntilMs) {
-    // Permitir contar token también durante reversa de destrabe.
-    processSensor();
+  destrabeEnCurso = true;
+  motorAtras(t);
+  unsigned long finRetrocesoMs = millis() + (unsigned long)(retrocesoS * 1000.0f);
+  while (millis() < finRetrocesoMs) {
+    procesarSensor();
     delay(2);
   }
-  motorOffPins(h);
-  unjamInProgress = false;
-  jammed = false;
-  emitEvent("UNJAM_DONE");
-  if (targetRemaining > 0) setMotorState(true);
+  motorApagarPines(t);
+  destrabeEnCurso = false;
+  tolvaTrabada = false;
+  emitirEvento("UNJAM_DONE");
+  if (fichasRestantes > 0) setEstadoMotor(true);
 }
 
-static void countToken(void) {
-  if (targetRemaining <= 0) return;
-  HopperConfig *h = activeHopper();
-  unsigned long now = millis();
-  unsigned long minGap = (unsigned long)(h->pulsoMinS * 1000.0f);
-  if (minGap < MIN_TOKEN_GAP_MS) minGap = MIN_TOKEN_GAP_MS;
-  if (h->sensorBounceMs > (int)minGap) minGap = (unsigned long)h->sensorBounceMs;
-  if (lastCountMs > 0 && (now - lastCountMs) < minGap) {
-    dbgSensorFmt("TOKEN rechazado gap=%lu ms (min=%lu)", (unsigned long)(now - lastCountMs), minGap);
+static void contarFicha(void) {
+  if (fichasRestantes <= 0) return;
+  ConfigTolva *t = tolvaActiva();
+  unsigned long ahora = millis();
+  unsigned long separacionMin = (unsigned long)(t->pulsoMinS * 1000.0f);
+  if (separacionMin < SEPARACION_MINIMA_FICHA_MS) separacionMin = SEPARACION_MINIMA_FICHA_MS;
+  if (t->reboteSensorMs > (int)separacionMin) separacionMin = (unsigned long)t->reboteSensorMs;
+  if (ultimoConteoMs > 0 && (ahora - ultimoConteoMs) < separacionMin) {
+    depurarSensorFmt("TOKEN rechazado gap=%lu ms (min=%lu)", (unsigned long)(ahora - ultimoConteoMs), separacionMin);
     return;
   }
-  targetRemaining--;
-  dbgSensorFmt("TOKEN OK remaining=%d pulso_ms=%lu", targetRemaining,
-                 pulseStartMs > 0 ? (unsigned long)(now - pulseStartMs) : 0UL);
-  lastCountMs = millis();
-  motorOnSinceMs = millis();
-  jammed = false;
-  emitEvent("TOKEN");
-  if (targetRemaining <= 0) {
-    setMotorState(false);
-    emitEvent("RUN_DONE");
+  fichasRestantes--;
+  depurarSensorFmt("TOKEN OK restantes=%d pulso_ms=%lu", fichasRestantes,
+                   pulsoInicioMs > 0 ? (unsigned long)(ahora - pulsoInicioMs) : 0UL);
+  ultimoConteoMs = millis();
+  motorEncendidoDesdeMs = millis();
+  tolvaTrabada = false;
+  if (modoPrueba) {
+    emitirEvento("TEST_TOKEN");
+    modoPrueba = false;
+  } else {
+    emitirEvento("TOKEN");
+  }
+  if (fichasRestantes <= 0) {
+    setEstadoMotor(false);
+    emitirEvento("RUN_DONE");
 #if TEST_STANDALONE
-    dbgSensor("TEST: lote terminado -> reinicio automatico");
-    armTestStandalone();
+    depurarSensor("TEST: lote terminado -> reinicio automatico");
+    armarPruebaStandalone();
 #endif
   }
 }
 
-static void dbgSensorPeriodic(int rawState, unsigned long now) {
-  if (!sensorDebugOn()) return;
-  if (now - lastSensorDbgMs < (unsigned long)DEBUG_SENSOR_INTERVAL_MS) return;
-  lastSensorDbgMs = now;
-  HopperConfig *h = activeHopper();
-  unsigned long graceLeft = 0;
-  if (motorOn && targetRemaining > 0 && now >= motorArmedAtMs) {
-    unsigned long elapsed = now - motorArmedAtMs;
-    if (elapsed < MOTOR_SENSOR_GRACE_MS) graceLeft = MOTOR_SENSOR_GRACE_MS - elapsed;
+static int ultimoEstadoDepurado = -1;
+
+static void depurarSensorPeriodico(int estadoRaw, unsigned long ahora) {
+  if (!depuracionSensorActiva()) return;
+  bool activo = motorEncendido || destrabeEnCurso || fichasRestantes > 0 || pulsoSensorActivo;
+  bool cambio = (estadoRaw != ultimoEstadoDepurado);
+  if (!activo && !cambio) return;
+  if (activo && (ahora - ultimoDepuracionSensorMs) < (unsigned long)DEBUG_SENSOR_INTERVAL_MS) return;
+  ultimoDepuracionSensorMs = ahora;
+  ultimoEstadoDepurado = estadoRaw;
+  ConfigTolva *t = tolvaActiva();
+  unsigned long graciaRestante = 0;
+  if (motorEncendido && fichasRestantes > 0 && ahora >= motorArmadoDesdeMs) {
+    unsigned long transcurrido = ahora - motorArmadoDesdeMs;
+    if (transcurrido < GRACIA_SENSOR_MOTOR_MS) graciaRestante = GRACIA_SENSOR_MOTOR_MS - transcurrido;
   }
-  unsigned long sinceToken = lastCountMs > 0 ? now - lastCountMs : 0;
-  dbgSensorFmt(
-      "pin=%d raw=%s(%d) motor=%d tgt=%d pulse=%d grace=%lums since_token=%lums bounce=%dms",
-      h->sensorPin, rawState == LOW ? "LOW" : "HIGH", rawState, motorOn ? 1 : 0, targetRemaining,
-      sensorPulseActive ? 1 : 0, graceLeft, sinceToken, h->sensorBounceMs);
+  unsigned long desdeUltimaFicha = ultimoConteoMs > 0 ? ahora - ultimoConteoMs : 0;
+  depurarSensorFmt(
+      "pin=%d raw=%s(%d) motor=%d obj=%d pulso=%d gracia=%lums desde_ficha=%lums rebote=%dms",
+      t->pinSensor, estadoRaw == LOW ? "LOW" : "HIGH", estadoRaw, motorEncendido ? 1 : 0, fichasRestantes,
+      pulsoSensorActivo ? 1 : 0, graciaRestante, desdeUltimaFicha, t->reboteSensorMs);
 }
 
-static void processSensor(void) {
-  HopperConfig *h = activeHopper();
-  int state = digitalRead(h->sensorPin);
-  unsigned long now = millis();
-  dbgSensorPeriodic(state, now);
+static bool esFlancoInicioPulso(const ConfigTolva *t, int prev, int cur) {
+  if (t->sensorBloqueadoAlto) return prev == LOW && cur == HIGH;
+  return prev == HIGH && cur == LOW;
+}
+
+static bool esFlancoFinPulso(const ConfigTolva *t, int prev, int cur) {
+  if (t->sensorBloqueadoAlto) return prev == HIGH && cur == LOW;
+  return prev == LOW && cur == HIGH;
+}
+
+static void procesarSensor(void) {
+  ConfigTolva *t = tolvaActiva();
+  int estado = digitalRead(t->pinSensor);
+  unsigned long ahora = millis();
+  depurarSensorPeriodico(estado, ahora);
 #if TEST_STANDALONE
-  /* En prueba con botón no hace falta gracia del motor. */
 #else
-  if (motorOn && targetRemaining > 0 && (now - motorArmedAtMs) < MOTOR_SENSOR_GRACE_MS) {
-    if (state != lastSensorState) {
-      dbgSensorFmt("flanco %d->%d IGNORADO (gracia motor %lums)", lastSensorState, state,
-                   (unsigned long)(MOTOR_SENSOR_GRACE_MS - (now - motorArmedAtMs)));
+  if (motorEncendido && fichasRestantes > 0 && (ahora - motorArmadoDesdeMs) < GRACIA_SENSOR_MOTOR_MS) {
+    if (estado != ultimoEstadoSensor) {
+      depurarSensorFmt("flanco %d->%d IGNORADO (gracia motor %lums)", ultimoEstadoSensor, estado,
+                       (unsigned long)(GRACIA_SENSOR_MOTOR_MS - (ahora - motorArmadoDesdeMs)));
     }
     return;
   }
 #endif
-  if (state != lastSensorState) {
-    dbgSensorFmt("flanco %d->%d motor=%d target=%d pulse_activo=%d", lastSensorState, state,
-                 motorOn ? 1 : 0, targetRemaining, sensorPulseActive ? 1 : 0);
-    // Con el acondicionamiento actual, el sensor queda en LOW en reposo y
-    // el pulso útil de ficha aparece en HIGH; por eso arrancamos pulso en LOW->HIGH.
-    if (lastSensorState == LOW && state == HIGH) {
-      float minSep = (float)h->sensorBounceMs;
-      if (minSep < 120.0f) minSep = 120.0f;
-      float pulsoMs = h->pulsoMinS * 1000.0f;
-      if (pulsoMs > minSep) minSep = pulsoMs;
-      if (lastCountMs == 0 || (now - lastCountMs) >= (unsigned long)minSep) {
-        sensorPulseActive = true;
-        pulseStartMs = now;
-        dbgSensorFmt("pulso INICIO (min_sep=%dms)", (int)minSep);
+  if (estado != ultimoEstadoSensor) {
+    depurarSensorFmt("flanco %d->%d motor=%d obj=%d pulso_activo=%d blocked_high=%d", ultimoEstadoSensor, estado,
+                     motorEncendido ? 1 : 0, fichasRestantes, pulsoSensorActivo ? 1 : 0,
+                     t->sensorBloqueadoAlto ? 1 : 0);
+    if (esFlancoInicioPulso(t, ultimoEstadoSensor, estado)) {
+      float sepMin = (float)t->reboteSensorMs;
+      if (sepMin < 120.0f) sepMin = 120.0f;
+      float pulsoMs = t->pulsoMinS * 1000.0f;
+      if (pulsoMs > sepMin) sepMin = pulsoMs;
+      if (ultimoConteoMs == 0 || (ahora - ultimoConteoMs) >= (unsigned long)sepMin) {
+        pulsoSensorActivo = true;
+        pulsoInicioMs = ahora;
+        depurarSensorFmt("pulso INICIO (sep_min=%dms)", (int)sepMin);
       } else {
-        dbgSensorFmt("LOW ignorado: muy pronto tras ultimo token (%lums < %dms)",
-                     (unsigned long)(now - lastCountMs), (int)minSep);
+        depurarSensorFmt("inicio pulso ignorado: muy pronto tras ultima ficha (%lums < %dms)",
+                         (unsigned long)(ahora - ultimoConteoMs), (int)sepMin);
       }
-    } else if (sensorPulseActive && state == LOW) {
-      unsigned long pulsoDur = now - pulseStartMs;
-      sensorPulseActive = false;
+    } else if (pulsoSensorActivo && esFlancoFinPulso(t, ultimoEstadoSensor, estado)) {
+      unsigned long duracionPulso = ahora - pulsoInicioMs;
+      pulsoSensorActivo = false;
 #if TEST_STANDALONE
-      if (targetRemaining > 0) {
-        dbgSensorFmt("pulso FIN dur=%lums -> contar TOKEN (test)", pulsoDur);
-        countToken();
+      if (fichasRestantes > 0) {
+        depurarSensorFmt("pulso FIN dur=%lums -> contar TOKEN (test)", duracionPulso);
+        contarFicha();
       } else {
-        dbgSensorFmt("pulso FIN dur=%lums -> rearmar test", pulsoDur);
-        armTestStandalone();
+        depurarSensorFmt("pulso FIN dur=%lums -> rearmar test", duracionPulso);
+        armarPruebaStandalone();
       }
 #else
-      if ((motorOn || unjamInProgress) && targetRemaining > 0) {
-        dbgSensorFmt("pulso FIN dur=%lums -> contar TOKEN", pulsoDur);
-        countToken();
+      if ((motorEncendido || destrabeEnCurso) && fichasRestantes > 0) {
+        depurarSensorFmt("pulso FIN dur=%lums -> contar TOKEN", duracionPulso);
+        contarFicha();
       } else {
-        dbgSensorFmt("pulso FIN dur=%lums SIN token (motor=%d target=%d)", pulsoDur, motorOn ? 1 : 0,
-                     targetRemaining);
+        depurarSensorFmt("pulso FIN dur=%lums SIN token (motor=%d obj=%d)", duracionPulso, motorEncendido ? 1 : 0,
+                         fichasRestantes);
       }
 #endif
     }
-    lastSensorState = state;
+    ultimoEstadoSensor = estado;
   }
 }
 
-static void processTimeout(void) {
-  if (!motorOn || targetRemaining <= 0) return;
-  HopperConfig *h = activeHopper();
-  unsigned long now = millis();
-  float elapsed = (now - motorOnSinceMs) / 1000.0f;
-  if (elapsed < h->timeoutMotorS) return;
+static void procesarTimeoutMotor(void) {
+  if (!motorEncendido || fichasRestantes <= 0) return;
+  ConfigTolva *t = tolvaActiva();
+  unsigned long ahora = millis();
+  float segundosEncendido = (ahora - motorEncendidoDesdeMs) / 1000.0f;
+  if (segundosEncendido < t->timeoutMotorS) return;
 
-  if (destrabeCfg.enabled && destrabeCfg.autoOnTimeout && h->motorRevPin >= 0 &&
-      destrabeAttempts < destrabeCfg.maxIntentos &&
-      (now - lastDestrabeMs) >= (unsigned long)(destrabeCfg.cooldownS * 1000.0f)) {
-    destrabeAttempts++;
-    lastDestrabeMs = now;
-    setMotorState(false);
-    doUnjam(destrabeCfg.retrocesoS);
-    motorOnSinceMs = millis();
+  if (cfgDestrabe.habilitado && cfgDestrabe.autoEnTimeout && t->pinMotorRev >= 0 &&
+      intentosDestrabe < cfgDestrabe.maxIntentos &&
+      (ahora - ultimoDestrabeMs) >= (unsigned long)(cfgDestrabe.enfriamientoS * 1000.0f)) {
+    intentosDestrabe++;
+    ultimoDestrabeMs = ahora;
+    setEstadoMotor(false);
+    ejecutarDestrabe(cfgDestrabe.retrocesoS);
+    motorEncendidoDesdeMs = millis();
     return;
   }
 
-  setMotorState(false);
-  jammed = true;
-  emitEventMsg("JAM", "timeout");
+  setEstadoMotor(false);
+  tolvaTrabada = true;
+  modoPrueba = false;
+  emitirEventoConMensaje("JAM", "timeout");
 }
 
-static void handleCommand(const char *line) {
+static void manejarComando(const char *linea) {
   StaticJsonDocument<768> doc;
-  if (deserializeJson(doc, line)) {
+  if (deserializeJson(doc, linea)) {
     StaticJsonDocument<96> err;
     err["dir"] = "evt";
     err["type"] = "ERR";
@@ -491,8 +532,8 @@ static void handleCommand(const char *line) {
     Serial.println();
     return;
   }
-  const char *type = doc["type"] | "";
-  if (strcmp(type, "HELLO") == 0) {
+  const char *tipo = doc["type"] | "";
+  if (strcmp(tipo, "HELLO") == 0) {
     StaticJsonDocument<64> ack;
     ack["dir"] = "evt";
     ack["type"] = "HELLO_ACK";
@@ -501,7 +542,7 @@ static void handleCommand(const char *line) {
     Serial.println();
     return;
   }
-  if (strcmp(type, "PING") == 0) {
+  if (strcmp(tipo, "PING") == 0) {
     StaticJsonDocument<48> pong;
     pong["dir"] = "evt";
     pong["type"] = "PONG";
@@ -509,115 +550,125 @@ static void handleCommand(const char *line) {
     Serial.println();
     return;
   }
-  if (strcmp(type, "CONFIG") == 0) {
-    handleConfig(doc);
+  if (strcmp(tipo, "CONFIG") == 0) {
+    manejarConfig(doc);
     return;
   }
-  if (strcmp(type, "SET_TARGET") == 0) {
-    handleSetTarget(doc["remaining"] | 0);
+  if (strcmp(tipo, "SET_TARGET") == 0) {
+    manejarObjetivoFichas(doc["remaining"] | 0);
     return;
   }
-  if (strcmp(type, "SELECT_HOPPER") == 0) {
-    int hid = doc["id"] | 1;
+  if (strcmp(tipo, "SELECT_HOPPER") == 0) {
+    int idTolva = doc["id"] | 1;
     for (int i = 0; i < MAX_HOPPERS; i++) {
-      if (hoppers[i].id == hid) {
-        setMotorState(false);
-        activeHopperIdx = i;
-        applyHopperPins(&hoppers[i]);
-        emitEvent("READY");
+      if (tolvas[i].id == idTolva) {
+        setEstadoMotor(false);
+        indiceTolvaActiva = i;
+        aplicarPinesTolva(&tolvas[i]);
+        emitirEvento("READY");
         return;
       }
     }
     return;
   }
-  if (strcmp(type, "UNJAM") == 0) {
-    float retro = doc["retroceso_s"] | destrabeCfg.retrocesoS;
-    doUnjam(retro);
+  if (strcmp(tipo, "UNJAM") == 0) {
+    float retroceso = doc["retroceso_s"] | cfgDestrabe.retrocesoS;
+    ejecutarDestrabe(retroceso);
     return;
   }
-  if (strcmp(type, "STOP") == 0) {
-    dbg("MOTOR", "STOP cmd");
-    targetRemaining = 0;
-    setMotorState(false);
-    emitEvent("RUN_DONE");
+  if (strcmp(tipo, "TEST_DISPENSE") == 0) {
+    depurar("MOTOR", "TEST_DISPENSE cmd");
+    intentosDestrabe = 0;
+    tolvaTrabada = false;
+    fichasRestantes = 1;
+    modoPrueba = true;
+    setEstadoMotor(true);
     return;
   }
-  if (strcmp(type, "SIMULATE") == 0) {
-    if (targetRemaining > 0) countToken();
+  if (strcmp(tipo, "STOP") == 0) {
+    depurar("MOTOR", "STOP cmd");
+    fichasRestantes = 0;
+    modoPrueba = false;
+    setEstadoMotor(false);
+    emitirEvento("RUN_DONE");
+    return;
+  }
+  if (strcmp(tipo, "SIMULATE") == 0) {
+    if (fichasRestantes > 0) contarFicha();
     return;
   }
 }
 
-static void readSerial(void) {
+static void leerSerial(void) {
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\n') {
-      if (rxLen > 0) {
-        rxLine[rxLen] = '\0';
-        handleCommand(rxLine);
+      if (largoLineaRx > 0) {
+        lineaRx[largoLineaRx] = '\0';
+        manejarComando(lineaRx);
       }
-      rxLen = 0;
-      rxLine[0] = '\0';
+      largoLineaRx = 0;
+      lineaRx[0] = '\0';
     } else if (c != '\r') {
-      if (rxLen < sizeof(rxLine) - 1) {
-        rxLine[rxLen++] = c;
+      if (largoLineaRx < sizeof(lineaRx) - 1) {
+        lineaRx[largoLineaRx++] = c;
       } else {
-        rxLen = 0;
+        largoLineaRx = 0;
       }
     }
   }
 }
 
-static void armTestStandalone(void) {
+static void armarPruebaStandalone(void) {
 #if TEST_STANDALONE
-  configReady = true;
-  targetRemaining = TEST_FICHAS_INICIALES;
-  jammed = false;
-  activeHopper()->timeoutMotorS = DEFAULT_TIMEOUT_MOTOR_S;
-  activeHopper()->motorRevPin = -1;
-  dbgSensorFmt("TEST: %d fichas | LED pin=%d boton pin=%d (pulsa+suelta=1 ficha)",
-               targetRemaining, activeHopper()->motorPin, activeHopper()->sensorPin);
-  setMotorState(true);
-  emitEvent("SYNC");
+  configLista = true;
+  fichasRestantes = TEST_FICHAS_INICIALES;
+  tolvaTrabada = false;
+  tolvaActiva()->timeoutMotorS = DEFAULT_TIMEOUT_MOTOR_S;
+  tolvaActiva()->pinMotorRev = -1;
+  depurarSensorFmt("TEST: %d fichas | LED pin=%d boton pin=%d (pulsa+suelta=1 ficha)",
+                   fichasRestantes, tolvaActiva()->pinMotor, tolvaActiva()->pinSensor);
+  setEstadoMotor(true);
+  emitirEvento("SYNC");
 #endif
 }
 
 void setup(void) {
-  forceRelaysOffSafe();
+  forzarRelesApagadosSeguro();
   Serial.begin(115200);
-  targetRemaining = 0;
-  motorOn = false;
-  configReady = false;
-  jammed = false;
-  rxLen = 0;
-  rxLine[0] = '\0';
+  fichasRestantes = 0;
+  motorEncendido = false;
+  configLista = false;
+  tolvaTrabada = false;
+  largoLineaRx = 0;
+  lineaRx[0] = '\0';
   for (int i = 0; i < MAX_HOPPERS; i++) {
-    initHopperDefaults(&hoppers[i], i + 1);
+    initTolvaPorDefecto(&tolvas[i], i + 1);
   }
-  applyHopperPins(activeHopper());
-  lastSensorState = digitalRead(activeHopper()->sensorPin);
-  lastCountMs = 0;
+  aplicarPinesTolva(tolvaActiva());
+  ultimoEstadoSensor = digitalRead(tolvaActiva()->pinSensor);
+  ultimoConteoMs = 0;
 #if TEST_STANDALONE
-  testBootBlink();
+  parpadeoArranquePrueba();
 #endif
-  if (sensorDebugOn()) {
-    dbgSensorFmt("BOOT pin=%d estado=%s(%d) DEBUG_SENSOR=%d bounce=%dms",
-                 activeHopper()->sensorPin, lastSensorState == LOW ? "LOW" : "HIGH", lastSensorState,
-                 DEBUG_SENSOR, activeHopper()->sensorBounceMs);
+  if (depuracionSensorActiva()) {
+    depurarSensorFmt("BOOT pin=%d blocked_high=%d estado=%s(%d) (libre=0 tapado=1)",
+                     tolvaActiva()->pinSensor, tolvaActiva()->sensorBloqueadoAlto ? 1 : 0,
+                     ultimoEstadoSensor == LOW ? "LOW" : "HIGH", ultimoEstadoSensor);
   }
 #if TEST_STANDALONE
-  armTestStandalone();
+  armarPruebaStandalone();
 #endif
 }
 
 void loop(void) {
-  readSerial();
-  processSensor();
-  if (configReady && targetRemaining > 0 && !jammed) {
-    if (!motorOn) setMotorState(true);
-    processTimeout();
-  } else if (motorOn) {
-    setMotorState(false);
+  leerSerial();
+  procesarSensor();
+  if (configLista && fichasRestantes > 0 && !tolvaTrabada) {
+    if (!motorEncendido) setEstadoMotor(true);
+    procesarTimeoutMotor();
+  } else if (motorEncendido) {
+    setEstadoMotor(false);
   }
   delay(2);
 }

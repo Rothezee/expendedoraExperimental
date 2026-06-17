@@ -1,0 +1,36 @@
+---
+description: Reglas de capas Python en expendedora/
+globs: expendedora/**/*.py
+alwaysApply: false
+---
+
+# Capas estrictas
+
+| Capa | Puede importar | No puede importar |
+|------|----------------|-------------------|
+| `interface/` | `logic.application` (AppController) | `persistence.*` directo en GUI (excepción temporal: `auth/` → `cashier_database`) |
+| `logic/` | `logic.*`, `persistence.*` | `interface.*` |
+| `persistence/` | `persistence.*`, `logic.domain` | `logic.services`, `interface.*` |
+
+## GUI
+
+- Usar `self.app` (`AppController`); no usar alias `self.core` ni `shared_buffer`
+- Estado: `self.app.machine_state` (`get_fichas_sesion`, `get_fichas_acumuladas`)
+- Persistir vía `self.app.persist_snapshot(...)`, no escribir JSON desde la GUI
+
+## Anti-patrones
+
+```python
+# ❌ Fachada vacía
+# database.py → reexport get_user
+
+# ❌ GUI importando serial directo
+from expendedora.logic.hardware.serial_bridge import SerialBridge
+
+# ✅ GUI vía controller
+self.app.vaciar_buffer()
+```
+
+## Archivos
+
+- Máximo ~500 líneas por módulo de interfaz; extraer mixins si crece

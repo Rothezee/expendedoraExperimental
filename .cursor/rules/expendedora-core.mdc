@@ -1,0 +1,39 @@
+---
+description: Contexto base del proyecto expendedora (kiosko PC + Arduino)
+alwaysApply: true
+---
+
+# Expendedora — núcleo
+
+Sistema de caja Windows + dispensado Arduino Uno (serial USB).
+
+## Estructura
+
+```
+expendedora/
+├── interface/   # Tkinter, login, GUI → solo AppController
+├── logic/       # reglas, MachineState, SerialBridge, servicios
+└── persistence/ # JSON, MySQL, HTTP remoto
+```
+
+- Entrada: `main.py` → `expendedora.interface.main.run_kiosk_loop`
+- Fachada lógica: `expendedora.logic.application.app_controller.AppController`
+- Wiring: `expendedora.logic.application.bootstrap.create_app_controller`
+
+## Datos JSON
+
+Todos en `expendedora/persistence/json/` (vía `expendedora.persistence.paths`).
+Nunca crear `persistencia/` en la raíz ni shims (`database.py`, `shared_buffer.py`).
+
+## Hardware
+
+- Label GUI: **Arduino** (logs `[ARDUINO]`; clave config `hardware.esp32` es histórica)
+- Pines tolva 1: motor 10, reversa 12, sensor 9 (`motor_active_low: true`)
+- Protocolo: `expendedora/logic/hardware/protocol.py`
+- Baud: 115200
+
+## Cambios
+
+- Diffs mínimos; no reintroducir carpetas legacy (`infra/`, `User_management/`, `services/` en raíz)
+- Sin fachadas que solo reexporten imports
+- Documentar en `Notas/OPERACION.md` si cambian rutas o operación

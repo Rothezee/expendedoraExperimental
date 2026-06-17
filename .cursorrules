@@ -1,0 +1,14 @@
+# Expendedora Experimental
+
+Kiosko PC + Arduino. Arquitectura en capas bajo `expendedora/`.
+
+- Reglas detalladas: `.cursor/rules/*.mdc`
+- Skills de validación/review: `.cursor/skills/` y `.cursor/README.md`
+- Datos JSON: `expendedora/persistence/json/` (ver `paths.py`)
+- Entrada: `python main.py`
+- Docs operación: `Notas/OPERACION.md`, baseline: `Notas/HANDOFF.md`
+
+Código legible en español: ver regla `expendedora-espanol.mdc`.
+
+Antes de cerrar cambios de código: usar skill `expendedora-verify`.
+Antes de release en máquina: usar skill `expendedora-field-validation`.

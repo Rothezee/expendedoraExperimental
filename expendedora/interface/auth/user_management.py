@@ -1,0 +1,69 @@
+import tkinter as tk
+from .login import LoginWindow
+from .register import RegisterWindow
+from expendedora.persistence.mysql.cashier_database import create_table
+
+class UserManagement:
+    def __init__(self, main_callback=None):
+        self.main_callback = main_callback  # Guardar el callback
+        self.user_session = None
+        schema_ok, schema_msg = create_table()  # Validar esquema de usuarios (best-effort)
+        self.root = tk.Tk()
+        self.root.title("Sistema de Control de Usuarios") # El título no será visible
+        self.root.attributes('-fullscreen', True) # Ocupa 100% de pantalla y oculta la barra de título
+        self.root.configure(bg="#e9ecef")
+
+        self.main_frame = tk.Frame(self.root, bg="#e9ecef")
+        self.main_frame.pack(pady=50)
+
+        # Título
+        self.title_label = tk.Label(self.main_frame, text="Gestión de Usuarios", bg="#e9ecef", fg="#343a40", font=("Arial", 16, "bold"))
+        self.title_label.pack(pady=20)
+
+        # Botón de Login
+        self.login_button = tk.Button(self.main_frame, text="Iniciar Sesión", command=self.open_login, bg="#007BFF", fg="white", font=("Arial", 12, "bold"), bd=0, padx=10, pady=5)
+        self.login_button.pack(pady=10)
+
+        # Botón de Register
+        self.register_button = tk.Button(self.main_frame, text="Registrar", command=self.open_register, bg="#007BFF", fg="white", font=("Arial", 12, "bold"), bd=0, padx=10, pady=5)
+        self.register_button.pack(pady=10)
+
+        if not schema_ok:
+            tk.Label(
+                self.main_frame,
+                text=f"BD no disponible: {schema_msg}",
+                bg="#e9ecef",
+                fg="#c0392b",
+                font=("Arial", 10, "bold"),
+                wraplength=520,
+                justify="left",
+            ).pack(pady=(8, 0))
+
+    def open_login(self):
+        LoginWindow(self.root, self.on_login_success)  # Pasar la función de éxito
+
+    def open_register(self):
+        RegisterWindow(self.root)
+
+    def on_login_success(self, user_session):
+        self.user_session = user_session
+        if callable(self.main_callback):
+            self.root.destroy()  # Compatibilidad con flujo callback legado
+            self.main_callback(user_session)
+            return
+        # Flujo orquestado por main.py (sin callbacks encadenados).
+        # Evita cerrar/destruir en pleno callback de Tk; solo salir de mainloop.
+        try:
+            self.root.after(0, self.root.quit)
+        except Exception:
+            self.root.quit()
+
+    def run(self):
+        self.root.mainloop()
+        session = self.user_session
+        # Cierre explícito del root de login luego de salir de mainloop.
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        return session

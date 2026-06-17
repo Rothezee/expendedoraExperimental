@@ -1,8 +1,10 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from infra.config_repository import ConfigRepository
+from expendedora.persistence.json.config_repository import ConfigRepository
 
 
 class ConfigRepositoryTest(unittest.TestCase):
@@ -53,28 +55,30 @@ class ConfigRepositoryTest(unittest.TestCase):
 
     def test_normalize_mysql_null_password_no_string_none(self):
         repo = ConfigRepository("config.json")
-        normalized = repo.normalize(
-            {
-                "mysql": {
-                    "active": "local",
-                    "fallback_to_secondary": True,
-                    "local": {
-                        "host": "localhost",
-                        "port": 3306,
-                        "user": "root",
-                        "password": None,
-                        "database": "sistemadeadministracion",
+        env_limpio = {k: v for k, v in os.environ.items() if not k.startswith("MYSQL_")}
+        with patch.dict(os.environ, env_limpio, clear=True):
+            normalized = repo.normalize(
+                {
+                    "mysql": {
+                        "active": "local",
+                        "fallback_to_secondary": True,
+                        "local": {
+                            "host": "localhost",
+                            "port": 3306,
+                            "user": "root",
+                            "password": None,
+                            "database": "sistemadeadministracion",
+                        },
+                        "production": {
+                            "host": "remote.example",
+                            "port": 3306,
+                            "user": "u",
+                            "password": "secret",
+                            "database": "db",
+                        },
                     },
-                    "production": {
-                        "host": "remote.example",
-                        "port": 3306,
-                        "user": "u",
-                        "password": "secret",
-                        "database": "db",
-                    },
-                },
-            }
-        )
+                }
+            )
         self.assertEqual(normalized["mysql"]["local"]["password"], "")
         self.assertFalse(normalized["mysql"]["local"]["password"] == "None")
 
@@ -127,6 +131,15 @@ class ConfigRepositoryTest(unittest.TestCase):
         self.assertEqual(promos["Promo 1"], [])
         self.assertEqual(promos["Promo 2"], ["<KP_Multiply>"])
         self.assertEqual(promos["Promo 3"], [])
+
+    def test_default_hoppers_pins_match_firmware(self):
+        repo = ConfigRepository("config.json")
+        normalized = repo.normalize({})
+        hopper = normalized["maquina"]["hoppers"][0]
+        self.assertEqual(hopper["motor_pin"], 10)
+        self.assertEqual(hopper["motor_pin_rev"], 12)
+        self.assertEqual(hopper["sensor_pin"], 9)
+        self.assertTrue(hopper["sensor_blocked_high"])
 
 
 if __name__ == "__main__":

@@ -3,7 +3,8 @@ import tempfile
 import json
 from pathlib import Path
 
-from expendedora_gui import DEFAULT_PROMO_HOTKEYS, ExpendedoraGUI
+from expendedora.interface.gui.app import ExpendedoraGUI
+from expendedora.interface.gui.constants import DEFAULT_PROMO_HOTKEYS
 
 
 class GuiShortcutsConfigTest(unittest.TestCase):

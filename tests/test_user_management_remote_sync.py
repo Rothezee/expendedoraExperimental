@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from User_management import database as user_db
-from infra.auth_repository_mysql import AuthRepositoryMySQL
+from expendedora.persistence.mysql import cashier_database as user_db
+from expendedora.persistence.mysql.auth_repository import AuthRepositoryMySQL
 
 
 class UserManagementRemoteSyncTest(unittest.TestCase):

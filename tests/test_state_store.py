@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from infra import state_store
-from services.counter_service import CounterService
+from expendedora.persistence.json import state_store
+from expendedora.logic.services.counter_service import CounterService
 
 
 class TestStateStore(unittest.TestCase):
@@ -37,8 +37,8 @@ class TestStateStore(unittest.TestCase):
                 raise PermissionError("locked")
             return original_replace(src, dst)
 
-        with patch("infra.state_store.os.replace", side_effect=flaky_replace):
-            with patch("infra.state_store.time.sleep", return_value=None):
+        with patch("expendedora.persistence.json.state_store.os.replace", side_effect=flaky_replace):
+            with patch("expendedora.persistence.json.state_store.time.sleep", return_value=None):
                 state_store.atomic_write_json(path, {"ok": True})
 
         self.assertTrue(os.path.exists(path))
@@ -138,8 +138,58 @@ class TestStateStore(unittest.TestCase):
             registro_path=self.registro_path,
             state_path=self.state_path,
         )
-        self.assertEqual(snap["contadores_global"]["fichas_restantes"], 9)
-        self.assertEqual(snap["buffer"]["fichas_restantes"], 9)
+        self.assertEqual(snap["contadores_global"]["fichas_restantes"], 1)
+        self.assertEqual(snap["buffer"]["fichas_restantes"], 1)
+
+    def test_recover_prefers_machine_buffer_over_newer_config(self):
+        """config.json más nuevo no debe revivir fichas ya dispensadas."""
+        old_ts = "2020-01-01 10:00:00"
+        new_ts = "2026-05-18 14:00:00"
+        state_store.atomic_write_json(
+            self.state_path,
+            {
+                "schema_version": 1,
+                "revision": 2,
+                "updated_at": old_ts,
+                "buffer": {
+                    "fichas_restantes": 0,
+                    "fichas_expendidas": 10,
+                    "fichas_expendidas_sesion": 10,
+                    "cuenta": 0,
+                    "r_cuenta": 0,
+                },
+                "contadores_global": CounterService.ensure_schema({"fichas_expendidas": 10}),
+                "contadores_parcial": CounterService.ensure_schema({}),
+                "pending_lots": [],
+            },
+        )
+        state_store.atomic_write_json(
+            self.config_path,
+            {
+                "updated_at": new_ts,
+                "contadores_global": {
+                    "fichas_restantes": 9,
+                    "fichas_expendidas": 0,
+                    "dinero_ingresado": 0,
+                    "promo1_contador": 0,
+                    "promo2_contador": 0,
+                    "promo3_contador": 0,
+                    "fichas_devolucion": 0,
+                    "fichas_normales": 0,
+                    "fichas_promocion": 0,
+                    "fichas_cambio": 0,
+                },
+            },
+        )
+        snap = state_store.recover_state(
+            config_path=self.config_path,
+            buffer_path=self.buffer_path,
+            registro_path=self.registro_path,
+            state_path=self.state_path,
+        )
+        self.assertEqual(snap["buffer"]["fichas_restantes"], 0)
+        self.assertEqual(snap["contadores_global"]["fichas_restantes"], 0)
+        self.assertEqual(snap.get("pending_lots"), [])
 
     def test_corrupt_machine_state_falls_back_to_config(self):
         with open(self.state_path, "w", encoding="utf-8") as f:

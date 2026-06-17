@@ -1,6 +1,4 @@
-# PC Windows — expendedora + ESP32 USB
-# Python 3.10+
-
-requests
-mysql-connector-python
-pyserial
+mysql-connector-python>=8.0
+pyserial>=3.5
+requests>=2.28
+Pillow>=10.0

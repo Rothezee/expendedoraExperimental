@@ -1,12 +1,12 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from infra.report_repository_mysql import ReportRepositoryMySQL
-from infra.config_repository import ConfigRepository
+from expendedora.persistence.mysql.report_repository import ReportRepositoryMySQL
+from expendedora.persistence.json.config_repository import ConfigRepository
 
 
 class ReportRepositoryMySQLTest(unittest.TestCase):
-    @patch("infra.report_repository_mysql.mysql.connector.connect")
+    @patch("expendedora.persistence.mysql.report_repository.mysql.connector.connect")
     def test_unresolved_device_falls_back_to_unfiltered_query(self, connect_mock):
         config_repo = Mock(spec=ConfigRepository)
         config_repo.iter_mysql_targets.return_value = [

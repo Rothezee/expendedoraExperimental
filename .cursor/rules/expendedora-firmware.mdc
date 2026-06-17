@@ -1,0 +1,36 @@
+---
+description: Firmware Arduino y puente serial PC
+globs: firmware/**,expendedora/logic/hardware/**
+alwaysApply: false
+---
+
+# Serial / firmware
+
+## Protocolo
+
+Comandos PC→MCU: `HELLO`, `CONFIG`, `SET_TARGET`, `SELECT_HOPPER`, `UNJAM`, `STOP`, `PING`
+Eventos MCU→PC: `READY`, `TOKEN`, `MOTOR_ON`, `MOTOR_OFF`, `RUN_DONE`, `JAM`, `UNJAM_DONE`, `SYNC`, `ERR`
+
+Definición canónica: `expendedora/logic/hardware/protocol.py`
+
+## Firmware (`firmware/esp32_dispenser/`)
+
+- Código interno en **español** (`ConfigTolva`, `fichasRestantes`, `ejecutarDestrabe`, …)
+- Protocolo serial JSON sin cambios (`TOKEN`, `JAM`, `UNJAM`, …) — ver `protocol.py`
+- Destrabe auto: `maquina.destrabe.max_intentos` (default **3**) antes de emitir `JAM`
+
+Cambiar pines en `config.json` → reiniciar app (envía CONFIG).
+Cambiar lógica/pines en `.ino` / `config.h` → reflashear Arduino.
+
+## Bridge (`serial_bridge.py`)
+
+- `TOKEN` actualiza contadores y persiste vía `MachineState`
+- `JAM` activa emergencia en tolva; `UNJAM_DONE` limpia
+- `vaciar_buffer` centralizado con `revert_all_pending_lots`
+- Sin escrituras a `registro.json`
+
+## Debug
+
+- PC: `hardware.esp32.debug_motor_sensor` en config
+- MCU: `DEBUG_SENSOR` en `firmware/esp32_dispenser/config.h`
+- Cerrar monitor serial antes de `python main.py`

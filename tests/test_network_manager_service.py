@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from services.network_manager_service import NetworkManagerService
+from expendedora.logic.services.network_manager_service import NetworkManagerService
 
 
 class NetworkManagerServiceTest(unittest.TestCase):
@@ -31,7 +31,7 @@ class NetworkManagerServiceTest(unittest.TestCase):
         self.assertEqual(parsed["active_device"], "Wi-Fi")
         self.assertEqual(parsed["signal_percent"], 50)
 
-    @patch("services.network_manager_service.subprocess.run")
+    @patch("expendedora.logic.services.network_manager_service.subprocess.run")
     def test_list_wifi_networks_windows_parses_ssids(self, run_mock):
         run_mock.return_value = Mock(
             stdout=(
@@ -54,7 +54,7 @@ class NetworkManagerServiceTest(unittest.TestCase):
         parsed = NetworkManagerService._parse_windows_connected_interfaces(text)
         self.assertEqual(parsed, ["Ethernet", "Ethernet 2"])
 
-    @patch("services.network_manager_service.subprocess.run")
+    @patch("expendedora.logic.services.network_manager_service.subprocess.run")
     def test_windows_active_connection_falls_back_to_wired(self, run_mock):
         run_mock.side_effect = [
             Mock(stdout=""),  # netsh wlan show interfaces

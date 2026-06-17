@@ -1,0 +1,29 @@
+---
+description: Código legible en español — nombres, comentarios y logs
+globs: expendedora/**/*.py,firmware/**/*.ino,Notas/**
+alwaysApply: true
+---
+
+# Legibilidad en español
+
+## Nombres preferidos
+
+- Dominio: `tolva`, `fichas_restantes`, `contadores_global`, `destrabe`, `cajero`, `pin` (no `contraceña`)
+- Parámetros: `nombre`, `pin`, `controlador` (no `core_controller`, `username` solo en UI login)
+- Métodos públicos nuevos en español: `vaciar_buffer`, `desbloquear_motor`, `solicitar_destrabe`
+
+## Claves JSON legacy (no renombrar sin migración)
+
+- `hardware.esp32` y `backend: esp32_serial` = conexión **Arduino** por USB (nombre histórico)
+- En docs y logs usar **Arduino**; en config mantener la clave `esp32` por compatibilidad
+
+## Comentarios y docstrings
+
+- Explicar **por qué**, en español claro y breve
+- Logs operativos: prefijo `[ARDUINO]`, `[TOLVA]`, `[AUTH]`, `[STATE]` (no `[ESP32]` en mensajes nuevos)
+
+## Evitar
+
+- Fachadas que solo reexportan
+- Nombres en inglés mezclados sin motivo (`unlock_motor` → usar `desbloquear_motor`)
+- Abreviaturas crípticas en variables de negocio

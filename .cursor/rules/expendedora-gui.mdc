@@ -1,0 +1,30 @@
+---
+description: Convenciones Tkinter y mixins de la GUI
+globs: expendedora/interface/**
+alwaysApply: false
+---
+
+# Interfaz (Tkinter)
+
+## Arranque
+
+`UserManagement` (login) → `ExpendedoraGUI` con `controlador=app` ya iniciado.
+No anidar `mainloop` en roots destruidos; ver `interface/main.py`.
+
+## Mixins (`interface/gui/mixins/`)
+
+- Layout: `layout_mixin` + `layout_pages_mixin` + `layout_finish_mixin`
+- Admin: `admin_mixin` (compone `admin_shortcuts`, `admin_hardware`, `admin_reports`, `admin_settings`)
+- Operación: `operations_mixin`, `session_mixin`, `tolvas_mixin`, `shortcuts_mixin`, `config_mixin`, `ui_mixin`, `network_mixin`
+- Constantes compartidas en `interface/gui/constants.py`
+- Atajos promo: `atajos_promociones.json` junto a mixins
+
+## Red / HTTP en GUI
+
+- POST en hilo separado (`_post_en_hilo`); nunca bloquear Tkinter
+- Telemetría y cierres vía `AppController`, no `requests` suelto salvo helpers existentes
+
+## UX kiosko
+
+- Fullscreen; logout vía callback a `main.py`
+- Mensajes de error MySQL: `AppController.format_db_error`
