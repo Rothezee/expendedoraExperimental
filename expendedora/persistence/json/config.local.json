@@ -1,0 +1,10 @@
+{
+  "mysql": {
+    "local": {
+      "password": "39090169"
+    },
+    "production": {
+      "password": "Xh=4:Dc8oG;1"
+    }
+  }
+}

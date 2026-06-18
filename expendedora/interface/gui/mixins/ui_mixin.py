@@ -9,6 +9,14 @@ class UiMixin:
         lower = str(base_url or "").lower()
         return "127.0.0.1" in lower or "localhost" in lower
 
+    def _actualizar_fichas_restantes_label(self, pendientes: int) -> None:
+        """Sincroniza contador en memoria y card grande de fichas restantes."""
+        valor = int(pendientes)
+        self.contadores["fichas_restantes"] = valor
+        label = self.contadores_labels.get("fichas_restantes")
+        if label is not None:
+            label.config(text=f"{valor}")
+
 
     def _apply_kiosk_window(self):
         """

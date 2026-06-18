@@ -194,17 +194,10 @@ class LayoutMixin(LayoutPagesMixin, LayoutFinishMixin):
         )
         self.status_mode_lbl.pack(side="left", padx=4)
 
-        def _destrabar_tolva_seleccionada():
-            try:
-                self.app.solicitar_destrabe()
-                messagebox.showinfo("Destrabar", "Se solicitó destrabe (retroceso) en la tolva seleccionada.")
-            except Exception as e:
-                messagebox.showerror("Destrabar", f"No se pudo solicitar destrabe: {e}")
-
         self.btn_destrabar = tk.Button(
             self.header_status_frame,
             text="Destrabar",
-            command=_destrabar_tolva_seleccionada,
+            command=self.help_motor_trabado,
             bg="#F39C12",
             fg="white",
             font=("Segoe UI", 9, "bold"),
@@ -265,10 +258,7 @@ class LayoutMixin(LayoutPagesMixin, LayoutFinishMixin):
                 self.status_motor_lbl.config(text="Motor: OFF", bg="#ECF0F1", fg="#2C3E50")
                 self.status_motor_dir_lbl.config(text="Sentido: detenido", bg="#ECF0F1", fg="#2C3E50")
 
-            self.contadores["fichas_restantes"] = pendientes
-            label = self.contadores_labels.get("fichas_restantes")
-            if label is not None:
-                label.config(text=f"{pendientes}")
+            self._actualizar_fichas_restantes_label(pendientes)
             self._update_arduino_connection_label()
         except Exception:
             pass

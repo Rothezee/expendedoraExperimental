@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-HELP_PLACEHOLDER = "Ayuda — seleccionar caso…"
-
 
 @dataclass(frozen=True)
 class HelpScenario:
@@ -23,7 +21,7 @@ HELP_SCENARIOS: list[HelpScenario] = [
     HelpScenario(
         label="¿Motor trabado?",
         action="help_motor_trabado",
-        summary="Destraba con retroceso y verifica salida en 3 segundos.",
+        summary="Destraba con TEST_DISPENSE y verifica ficha de prueba (hasta ~18 s).",
     ),
     HelpScenario(
         label="¿Arduino sin conexión?",
@@ -38,10 +36,6 @@ HELP_SCENARIOS: list[HelpScenario] = [
     HelpScenario(
         label="¿Ventana trabada / sin responder?",
         action="help_reiniciar_app",
-        summary="Cierra sesión o reinicia desde el launcher del kiosco.",
+        summary="Cierra sesión o reinicia la app (en kiosco puede reiniciar el proceso).",
     ),
 ]
-
-
-def help_combo_values() -> tuple[str, ...]:
-    return (HELP_PLACEHOLDER,) + tuple(s.label for s in HELP_SCENARIOS)

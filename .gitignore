@@ -1,14 +1,5 @@
 node_modules/
 .env
-config.local.json
-expendedora/persistence/json/config.json
-expendedora/persistence/json/config.local.json
-expendedora/persistence/json/buffer_state.json
-expendedora/persistence/json/machine_state.json
-expendedora/persistence/json/machine_state.json.bak
-expendedora/persistence/json/config.json.bak
-expendedora/persistence/json/pending_cashier_sync.json
-expendedora/persistence/json/registro.json
 __pycache__/
 *.pyc
 buffer_state.json

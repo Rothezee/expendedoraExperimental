@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 import requests
 
 from expendedora.logic.domain.models import TelemetryPayload
+from expendedora.persistence.remote.url_utils import es_url_local
 
 
 class TelemetryRepository:
@@ -15,8 +16,7 @@ class TelemetryRepository:
 
     @staticmethod
     def _is_local_base(base_url: str) -> bool:
-        lower = base_url.lower()
-        return "127.0.0.1" in lower or "localhost" in lower
+        return es_url_local(base_url)
 
     @staticmethod
     def _is_cloud_base(base_url: str) -> bool:

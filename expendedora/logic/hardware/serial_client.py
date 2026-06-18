@@ -510,15 +510,14 @@ class SerialBackend:
 
     def configure_hopper(self, hopper: Dict[str, Any], destrabe: Optional[Dict[str, Any]] = None) -> bool:
         debug = self._settings.get("debug_motor_sensor", False)
-        ok = self._send_raw(cmd_config(hopper, destrabe, debug=debug))
-        if not ok:
-            return False
-        return self._wait_for_event(("READY",), 2.0)
+        return self._configure_and_wait(lambda: cmd_config(hopper, destrabe, debug=debug))
 
     def configure_hoppers(self, hoppers: List[Dict[str, Any]], destrabe: Optional[Dict[str, Any]] = None) -> bool:
         debug = self._settings.get("debug_motor_sensor", False)
-        ok = self._send_raw(cmd_config_hoppers(hoppers, destrabe, debug=debug))
-        if not ok:
+        return self._configure_and_wait(lambda: cmd_config_hoppers(hoppers, destrabe, debug=debug))
+
+    def _configure_and_wait(self, build_cmd) -> bool:
+        if not self._send_raw(build_cmd()):
             return False
         return self._wait_for_event(("READY",), 2.0)
 

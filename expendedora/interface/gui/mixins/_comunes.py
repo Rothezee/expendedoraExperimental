@@ -1,7 +1,5 @@
 """Imports compartidos por los mixins de la GUI."""
 
-import json
-import os
 import queue
 import subprocess
 import threading
@@ -11,12 +9,11 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-import requests
-
 from expendedora.interface.gui.constants import (
     DEFAULT_PROMO_HOTKEYS,
     DNS,
     DNS_LOCAL as DNSLocal,
+    PROMO_CONTADOR_KEYS,
     URL_CIERRES_CLOUD as urlCierresCloud,
     URL_CIERRES_LOCAL as urlCierresLocal,
     URL_SUBCIERRE_CLOUD as urlSubcierreCloud,

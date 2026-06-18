@@ -1,8 +1,12 @@
 """Mixin GUI: manual de usuario y ayuda rápida (barra inferior)."""
 
+import os
+import sys
+
 from expendedora.interface.gui.help_content import HELP_SCENARIOS
 from expendedora.interface.gui.manual_markdown import open_manual_window
 from expendedora.interface.gui.mixins._comunes import *  # noqa: F403
+from expendedora.interface.kiosk_env import kiosk_mode_habilitado
 
 
 class HelpMixin:
@@ -55,6 +59,11 @@ class HelpMixin:
         handler = getattr(self, action, None)
         if callable(handler):
             handler()
+            return
+        messagebox.showerror(
+            "Ayuda",
+            f"No se pudo ejecutar la acción de ayuda.\n\nAcción: {action}",
+        )
 
     def abrir_manual_usuario(self) -> None:
         if getattr(self, "_manual_window", None) is not None:
@@ -75,6 +84,56 @@ class HelpMixin:
             fonts=self.fonts,
             on_close=_on_close,
         )
+
+    def _mensaje_confirmacion_destrabe(self) -> bool:
+        return messagebox.askyesno(
+            "Motor trabado",
+            "Se intentará destrabar: hasta 3 ciclos adelante + retroceso.\n"
+            "Si sale una ficha de prueba, no se cuenta en la venta.\n\n"
+            "¿Continuar?",
+        )
+
+    def _destrabe_con_verificacion(self) -> None:
+        """Destrabe con TEST_DISPENSE y polling de TEST_TOKEN (compartido header + ayuda)."""
+        pendientes_antes = int(self._ms.get_fichas_restantes())
+        expendidas_antes = int(self.contadores.get("fichas_expendidas", 0))
+
+        try:
+            self.app.solicitar_destrabe()
+            self.actualizar_estado_operacion_ui()
+        except Exception as exc:
+            messagebox.showerror("Motor trabado", f"No se pudo solicitar destrabe:\n{exc}")
+            return
+
+        deadline = time.time() + 18.0
+
+        def _verificar_salida() -> None:
+            if self.app.test_token_destrabe_ok():
+                messagebox.showinfo(
+                    "Motor trabado",
+                    "Tolva destrabada: salió una ficha de prueba (no se cuenta en la venta).\n"
+                    "Si aún hay fichas pendientes, el expendio debería continuar.",
+                )
+                return
+            pendientes_despues = int(self._ms.get_fichas_restantes())
+            expendidas_despues = int(self.contadores.get("fichas_expendidas", 0))
+            if pendientes_despues < pendientes_antes or expendidas_despues > expendidas_antes:
+                messagebox.showinfo(
+                    "Motor trabado",
+                    "Se detectó actividad del dispensador.\n"
+                    "Si aún hay fichas pendientes, el expendio debería continuar.",
+                )
+                return
+            if time.time() < deadline:
+                self.root.after(500, _verificar_salida)
+                return
+            messagebox.showwarning(
+                "Motor trabado",
+                "No se detectó salida de ficha de prueba.\n\n"
+                "Solicite atención de un técnico.",
+            )
+
+        self.root.after(500, _verificar_salida)
 
     def help_fichas_no_cuentan(self) -> None:
         pendientes = int(self._ms.get_fichas_restantes())
@@ -135,53 +194,9 @@ class HelpMixin:
             )
 
     def help_motor_trabado(self) -> None:
-        if not messagebox.askyesno(
-            "Motor trabado",
-            "Se intentará destrabar: hasta 3 ciclos adelante + retroceso.\n"
-            "Si sale una ficha de prueba, no se cuenta en la venta.\n\n"
-            "¿Continuar?",
-        ):
+        if not self._mensaje_confirmacion_destrabe():
             return
-
-        pendientes_antes = int(self._ms.get_fichas_restantes())
-        expendidas_antes = int(self.contadores.get("fichas_expendidas", 0))
-
-        try:
-            self.app.solicitar_destrabe()
-            self.actualizar_estado_operacion_ui()
-        except Exception as exc:
-            messagebox.showerror("Motor trabado", f"No se pudo solicitar destrabe:\n{exc}")
-            return
-
-        deadline = time.time() + 18.0
-
-        def _verificar_salida() -> None:
-            if self.app.test_token_destrabe_ok():
-                messagebox.showinfo(
-                    "Motor trabado",
-                    "Tolva destrabada: salió una ficha de prueba (no se cuenta en la venta).\n"
-                    "Si aún hay fichas pendientes, el expendio debería continuar.",
-                )
-                return
-            pendientes_despues = int(self._ms.get_fichas_restantes())
-            expendidas_despues = int(self.contadores.get("fichas_expendidas", 0))
-            if pendientes_despues < pendientes_antes or expendidas_despues > expendidas_antes:
-                messagebox.showinfo(
-                    "Motor trabado",
-                    "Se detectó actividad del dispensador.\n"
-                    "Si aún hay fichas pendientes, el expendio debería continuar.",
-                )
-                return
-            if time.time() < deadline:
-                self.root.after(500, _verificar_salida)
-                return
-            messagebox.showwarning(
-                "Motor trabado",
-                "No se detectó salida de ficha de prueba.\n\n"
-                "Solicite atención de un técnico.",
-            )
-
-        self.root.after(500, _verificar_salida)
+        self._destrabe_con_verificacion()
 
     def help_arduino_sin_conexion(self) -> None:
         status = self.app.get_serial_status()
@@ -192,7 +207,7 @@ class HelpMixin:
                 "Si el problema persiste, use «¿Las fichas salen pero no se cuentan?».",
             )
             return
-        self._on_click_status_arduino()
+        self._on_click_status_arduino(confirm=False)
 
     def help_pendientes_atascadas(self) -> None:
         pendientes = int(self._ms.get_fichas_restantes())
@@ -217,12 +232,37 @@ class HelpMixin:
         else:
             self.vaciar_buffer_dispensa_gui()
 
+    def _reiniciar_proceso_kiosk(self) -> None:
+        """Reinicia el proceso Python (el launcher kiosk vuelve a abrir la app)."""
+        try:
+            self._persistir_estado_critico("reinicio_kiosk")
+        except Exception as exc:
+            print(f"[GUI] Aviso persistiendo antes de reinicio kiosk: {exc}")
+        try:
+            self.app.stop()
+        except Exception as exc:
+            print(f"[GUI] Aviso deteniendo app antes de reinicio kiosk: {exc}")
+        try:
+            self._shutdown_ui(destroy_root=True)
+        except Exception:
+            pass
+        print("[GUI] Reinicio solicitado desde Ayuda (modo kiosco)")
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
     def help_reiniciar_app(self) -> None:
-        messagebox.showinfo(
-            "Reiniciar aplicación",
+        detalle = (
             "Para recuperar la interfaz:\n\n"
             "1. Use «Cerrar sesión» en el menú lateral.\n"
             "2. Vuelva a ingresar con su usuario.\n\n"
             "En kiosco, el launcher vuelve a abrir la app automáticamente "
-            "si se cierra por completo.",
+            "si se cierra por completo."
         )
+        if kiosk_mode_habilitado():
+            if messagebox.askyesno(
+                "Reiniciar aplicación",
+                f"{detalle}\n\n"
+                "¿Reiniciar la aplicación ahora? (modo kiosco)",
+            ):
+                self._reiniciar_proceso_kiosk()
+            return
+        messagebox.showinfo("Reiniciar aplicación", detalle)

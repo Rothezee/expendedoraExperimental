@@ -1,0 +1,164 @@
+{
+  "promociones": {
+    "Promo 1": {
+      "precio": 10000.0,
+      "fichas": 24
+    },
+    "Promo 2": {
+      "precio": 0.0,
+      "fichas": 5
+    },
+    "Promo 3": {
+      "precio": 25000.0,
+      "fichas": 70
+    }
+  },
+  "valor_ficha": 500.0,
+  "api": {
+    "base_urls": [
+      "http://127.0.0.1",
+      "https://app.maquinasbonus.com"
+    ],
+    "endpoint_receptor": "AdministrationPanel/src/devices/api_receptor.php",
+    "endpoint_receptor_local": "AdministrationPanel/src/devices/api_receptor.php",
+    "endpoint_receptor_cloud": "src/devices/api_receptor.php",
+    "endpoint_receptor_cloud_fallback": "",
+    "timeout_s": 5,
+    "headers": {}
+  },
+  "admin": {
+    "dni_admin": "00000000"
+  },
+  "atajos": {
+    "promociones": {
+      "Promo 1": [
+        "<slash>",
+        "<KP_Divide>"
+      ],
+      "Promo 2": [
+        "<asterisk>",
+        "<KP_Multiply>",
+        "x",
+        "X"
+      ],
+      "Promo 3": [
+        "<minus>",
+        "<KP_Subtract>"
+      ]
+    }
+  },
+  "maquina": {
+    "codigo_hardware": "PruebaExpendedora",
+    "tipo_maquina": 1,
+    "hoppers": [
+      {
+        "id": 1,
+        "nombre": "Tolva 1",
+        "motor_pin": 10,
+        "motor_pin_rev": 12,
+        "motor_active_low": true,
+        "sensor_pin": 9,
+        "sensor_blocked_high": true,
+        "sensor_bouncetime_ms": 8,
+        "calibracion": {
+          "pulso_min_s": 0.05,
+          "pulso_max_s": 0.5,
+          "timeout_motor_s": 4.0
+        }
+      }
+    ],
+    "sensor_interrupts": {
+      "bouncetime_ms": 8
+    }
+  },
+  "heartbeat": {
+    "intervalo_s": 600
+  },
+  "mysql": {
+    "active": "local",
+    "fallback_to_secondary": true,
+    "local": {
+      "host": "localhost",
+      "port": 3306,
+      "user": "root",
+      "password": "39090169",
+      "database": "sistemadeadministracion"
+    },
+    "production": {
+      "host": "srv1596.hstgr.io",
+      "port": 3306,
+      "user": "u868087036_administrador",
+      "password": "Xh=4:Dc8oG;1",
+      "database": "u868087036_sistemadeadmin"
+    }
+  },
+  "updater": {
+    "enabled": false,
+    "remote": "origin",
+    "branch": "main",
+    "check_interval_s": 300,
+    "run_pip_install": false,
+    "requirements_file": "requirements.txt",
+    "restart_command_linux": "",
+    "restart_command_windows": "",
+    "preserve_files": [
+      "expendedora/persistence/json/config.json",
+      "expendedora/persistence/json/machine_state.json",
+      "expendedora/persistence/json/machine_state.json.bak",
+      "expendedora/persistence/json/buffer_state.json",
+      "expendedora/persistence/json/registro.json",
+      "expendedora/persistence/json/pending_cashier_sync.json"
+    ]
+  },
+  "network_manager": {
+    "enabled": true,
+    "check_interval_s": 8,
+    "reconnect_after_failures": 3,
+    "backend_timeout_s": 3.0,
+    "internet_host": "8.8.8.8",
+    "backend_url": "https://maquinasbonus.com/",
+    "preferred_interface": "",
+    "wifi_ssid": "",
+    "wifi_password": ""
+  },
+  "hardware": {
+    "backend": "esp32_serial",
+    "esp32": {
+      "port": "",
+      "baud": 115200,
+      "auto_detect": true,
+      "connect_timeout_s": 3.0,
+      "command_timeout_ms": 500,
+      "debug_motor_sensor": true
+    }
+  },
+  "contadores_global": {
+    "fichas_expendidas": 5,
+    "dinero_ingresado": 0.0,
+    "promo1_contador": 0,
+    "promo2_contador": 0,
+    "promo3_contador": 0,
+    "fichas_restantes": 0,
+    "fichas_devolucion": 0,
+    "fichas_normales": 0,
+    "fichas_promocion": 0,
+    "fichas_cambio": 0
+  },
+  "contadores_parcial": {
+    "fichas_expendidas": 3,
+    "dinero_ingresado": 0.0,
+    "promo1_contador": 0,
+    "promo2_contador": 0,
+    "promo3_contador": 0,
+    "fichas_restantes": 0,
+    "fichas_devolucion": 0,
+    "fichas_normales": 0,
+    "fichas_promocion": 0,
+    "fichas_cambio": 0
+  },
+  "device_id": "PruebaExpendedora",
+  "updated_at": "2026-06-18 11:50:05",
+  "operacion": {
+    "ultima_apertura_fecha": "2026-06-09"
+  }
+}

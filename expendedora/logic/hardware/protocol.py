@@ -71,21 +71,6 @@ def cmd_config(
     return payload
 
 
-def cmd_config_destrabe(
-    destrabe: Dict[str, Any],
-    *,
-    debug: bool = False,
-) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
-        "dir": "cmd",
-        "type": "CONFIG",
-        "destrabe": destrabe,
-    }
-    if debug:
-        payload["debug"] = True
-    return payload
-
-
 def cmd_config_hoppers(
     hoppers: list,
     destrabe: Optional[Dict[str, Any]] = None,
@@ -155,7 +140,3 @@ def destrabe_from_config(cfg: Dict[str, Any], tolva: Dict[str, Any]) -> Dict[str
 
 def is_event(frame: Dict[str, Any]) -> bool:
     return str(frame.get("dir", "")).lower() == "evt"
-
-
-def event_type(frame: Dict[str, Any]) -> str:
-    return str(frame.get("type", "")).upper()

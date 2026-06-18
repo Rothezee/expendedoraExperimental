@@ -136,15 +136,7 @@ class TolvaService:
         with self._destrabe_request_lock:
             self._destrabe_requested.update({"tolva_id": None, "ts": 0.0})
 
-    def consume_destrabe_request(self) -> Optional[dict]:
-        with self._destrabe_request_lock:
-            if self._destrabe_requested.get("ts", 0) > 0:
-                req = dict(self._destrabe_requested)
-                self._destrabe_requested.update({"tolva_id": None, "ts": 0.0})
-                return req
-        return None
-
-    def desbloquear_motor(self) -> None:
+    def limpiar_solicitud_destrabe(self) -> None:
         self.bloqueo_emergencia = False
         print("[TOLVA] Motor desbloqueado por usuario")
 

@@ -92,6 +92,22 @@ Menú **Contadores**: plata del día, fichas vendidas, promos usadas, etc.
 - Tocá el botón naranja **Destrabar** (arriba).
 - O elegí en **Ayuda → ¿Motor trabado?**
 
+Ambos hacen lo mismo: destraban con ficha de prueba (no cuenta en la venta).
+
+---
+
+## Menú Ayuda (barra inferior izquierda)
+
+Además del **Manual**, el botón **Ayuda ▾** tiene estos casos:
+
+| Caso | Qué hace |
+|------|----------|
+| ¿Las fichas salen pero no se cuentan? | Reconecta el Arduino y ofrece reintentar la venta pendiente. |
+| ¿Motor trabado? | Destraba la tolva (ficha de prueba, no suma a la venta). |
+| ¿Arduino sin conexión? | Intenta reconectar (igual que tocar «Arduino sin conexión» arriba). |
+| ¿Fichas pendientes que no salen? | Reconectar y reintentar, o anular la venta (vaciar buffer). |
+| ¿Ventana trabada / sin responder? | Indica cerrar sesión; en **modo kiosco** puede reiniciar la app. |
+
 ---
 
 ## Luces de estado (arriba)

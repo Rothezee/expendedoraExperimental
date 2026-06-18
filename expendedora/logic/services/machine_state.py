@@ -165,7 +165,7 @@ class MachineState:
             remaining = int(lot.get(key, 0))
             if remaining > 0 or consumed > 0:
                 initial[key] = remaining + consumed
-        for key in ("promo1_contador", "promo2_contador", "promo3_contador"):
+        for key in _SALE_START_COUNTER_KEYS:
             promo_val = int(lot.get(key, 0))
             if promo_val > 0:
                 initial[key] = promo_val

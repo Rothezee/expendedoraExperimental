@@ -20,11 +20,6 @@ from expendedora.persistence.remote.session_api_repository import SessionApiRepo
 from expendedora.persistence.db_exception_message import format_db_exception
 from expendedora.persistence.remote.telemetry_repository import TelemetryRepository
 
-URL_CIERRES_LOCAL = "AdministrationPanel/src/expendedora/insert_close_expendedora.php"
-URL_CIERRES_CLOUD = "src/expendedora/insert_close_expendedora.php"
-URL_SUBCIERRE_LOCAL = "AdministrationPanel/src/expendedora/insert_subcierre_expendedora.php"
-URL_SUBCIERRE_CLOUD = "src/expendedora/insert_subcierre_expendedora.php"
-
 
 class AppController:
     def __init__(
@@ -206,23 +201,6 @@ class AppController:
             payload=payload,
             descripcion=descripcion,
             retry_without_cashier_id=retry_without_cashier_id,
-        )
-
-    def post_daily_close(self, payload: dict, descripcion: str = "Cierre") -> None:
-        self.post_backend_event(
-            local_path=URL_CIERRES_LOCAL,
-            cloud_path=URL_CIERRES_CLOUD,
-            payload=payload,
-            descripcion=descripcion,
-        )
-
-    def post_partial_close(self, payload: dict, descripcion: str = "Cierre sesion") -> None:
-        self.post_backend_event(
-            local_path=URL_SUBCIERRE_LOCAL,
-            cloud_path=URL_SUBCIERRE_CLOUD,
-            payload=payload,
-            descripcion=descripcion,
-            retry_without_cashier_id=True,
         )
 
     @staticmethod

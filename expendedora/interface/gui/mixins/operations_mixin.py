@@ -5,11 +5,28 @@ from expendedora.interface.gui.mixins._comunes import *  # noqa: F403
 
 
 class OperationsMixin:
-    def _on_click_status_arduino(self):
+    def _leer_cantidad_desde_entry(self, entry) -> int | None:
+        """None si el campo está vacío o el valor no es válido (ya muestra error)."""
+        cantidad_str = entry.get()
+        if not cantidad_str:
+            return None
+        try:
+            cantidad = int(cantidad_str)
+        except ValueError:
+            messagebox.showerror("Error", "Ingrese un valor numérico válido.")
+            entry.focus_set()
+            return None
+        if cantidad <= 0:
+            messagebox.showerror("Error", "La cantidad debe ser mayor a 0.")
+            entry.focus_set()
+            return None
+        return cantidad
+
+    def _on_click_status_arduino(self, *, confirm: bool = True):
         try:
             if self.app.get_serial_status().get("connected"):
                 return
-            if not messagebox.askyesno(
+            if confirm and not messagebox.askyesno(
                 "Reconectar Arduino",
                 "El Arduino no está conectado.\n¿Intentar reconexión ahora?",
             ):
@@ -53,10 +70,7 @@ class OperationsMixin:
         try:
             revert = self.app.vaciar_buffer()
             self._revert_pending_counter_attribution(revert)
-            self.contadores["fichas_restantes"] = 0
-            label = self.contadores_labels.get("fichas_restantes")
-            if label is not None:
-                label.config(text="0")
+            self._actualizar_fichas_restantes_label(0)
             self.actualizar_estado_operacion_ui()
             self._persistir_estado_critico("vaciar_buffer")
             messagebox.showinfo(
@@ -77,27 +91,19 @@ class OperationsMixin:
             # Reflejo inmediato al presionar Expender/Enter (sin esperar primer TOKEN).
             self._ms.set_motor_activo(True)
             self._ms.set_motor_direccion("adelante")
-        self.contadores["fichas_restantes"] = restantes
-        label = self.contadores_labels.get("fichas_restantes")
-        if label is not None:
-            label.config(text=f"{restantes}")
+        self._actualizar_fichas_restantes_label(restantes)
         self.actualizar_estado_operacion_ui()
         return restantes
 
 
     def procesar_expender_fichas(self):
-        try:
-            cantidad_str = self.entry_fichas.get()
-            if not cantidad_str:
+        cantidad_fichas = self._leer_cantidad_desde_entry(self.entry_fichas)
+        if cantidad_fichas is None:
+            if not self.entry_fichas.get():
                 self.entry_fichas.focus_set()
-                return
-            
-            cantidad_fichas = int(cantidad_str)
-            if cantidad_fichas <= 0:
-                messagebox.showerror("Error", "La cantidad debe ser mayor a 0.")
-                self.entry_fichas.focus_set()  # <-- AÑADIR ESTO
-                return
+            return
 
+        try:
             # Cargar en buffer de inmediato (no optimista: evita persistir 0)
             self._cargar_fichas_en_buffer(cantidad_fichas)
 
@@ -122,24 +128,19 @@ class OperationsMixin:
             # Esto mantiene los bindings activos sin necesidad de clic
             self.entry_fichas.focus_set()
             
-        except ValueError:
-            messagebox.showerror("Error", "Ingrese un valor numérico válido.")
-            self.entry_fichas.focus_set()  # <-- AÑADIR ESTO
+        except Exception as exc:
+            messagebox.showerror("Error", f"No se pudo expender fichas:\n{exc}")
+            self.entry_fichas.focus_set()
 
 
     def procesar_devolucion_fichas(self):
-        try:
-            cantidad_str = self.entry_devolucion.get()
-            if not cantidad_str:
+        cantidad_fichas = self._leer_cantidad_desde_entry(self.entry_devolucion)
+        if cantidad_fichas is None:
+            if not self.entry_devolucion.get():
                 self.entry_devolucion.focus_set()
-                return
-            
-            cantidad_fichas = int(cantidad_str)
-            if cantidad_fichas <= 0:
-                messagebox.showerror("Error", "La cantidad debe ser mayor a 0.")
-                self.entry_devolucion.focus_set()  # <-- AÑADIR ESTO
-                return
+            return
 
+        try:
             self._cargar_fichas_en_buffer(cantidad_fichas)
 
             self._ms.register_pending_lot(
@@ -158,27 +159,19 @@ class OperationsMixin:
             # O mejor aún: usar un label de notificación en vez de messagebox
             self.entry_devolucion.focus_set()
             
-            # OPCIONAL: Si necesitas el mensaje, hazlo así:
-            # self.root.after(100, lambda: messagebox.showinfo("Devolución", f"Se han agregado {cantidad_fichas} fichas de devolución."))
-            
-        except ValueError:
-            messagebox.showerror("Error", "Ingrese un valor numérico válido.")
-            self.entry_devolucion.focus_set()  # <-- AÑADIR ESTO
+        except Exception as exc:
+            messagebox.showerror("Error", f"No se pudo procesar devolución:\n{exc}")
+            self.entry_devolucion.focus_set()
 
 
     def procesar_cambio_fichas(self):
-        try:
-            cantidad_str = self.entry_cambio.get()
-            if not cantidad_str:
+        cantidad_fichas = self._leer_cantidad_desde_entry(self.entry_cambio)
+        if cantidad_fichas is None:
+            if not self.entry_cambio.get():
                 self.entry_cambio.focus_set()
-                return
-            
-            cantidad_fichas = int(cantidad_str)
-            if cantidad_fichas <= 0:
-                messagebox.showerror("Error", "La cantidad debe ser mayor a 0.")
-                self.entry_cambio.focus_set()
-                return
+            return
 
+        try:
             self._cargar_fichas_en_buffer(cantidad_fichas)
 
             self._ms.register_pending_lot(
@@ -194,8 +187,8 @@ class OperationsMixin:
             self.entry_cambio.delete(0, tk.END)
             self.entry_cambio.focus_set()
             
-        except ValueError:
-            messagebox.showerror("Error", "Ingrese un valor numérico válido.")
+        except Exception as exc:
+            messagebox.showerror("Error", f"No se pudo procesar cambio:\n{exc}")
             self.entry_cambio.focus_set()
 
 
@@ -268,10 +261,7 @@ class OperationsMixin:
             f"buffer {pending_before} -> {pending_after}"
         )
 
-        self.contadores["fichas_restantes"] = pending_after
-        label = self.contadores_labels.get("fichas_restantes")
-        if label is not None:
-            label.config(text=f"{pending_after}")
+        self._actualizar_fichas_restantes_label(pending_after)
 
         if pending_after > 0:
             self._ms.set_motor_activo(True)
@@ -286,23 +276,15 @@ class OperationsMixin:
         # Telemetría y core usan r_cuenta de sesión
         self._ms.set_r_cuenta(self.contadores_parcial["dinero_ingresado"], immediate=False)
 
-        # Diccionario para simular el switch
-        promo_contadores = {
-            "Promo 1": "promo1_contador",
-            "Promo 2": "promo2_contador",
-            "Promo 3": "promo3_contador"
-        }
-
-        # Incrementar el contador de la promoción correspondiente
+        promo_key = PROMO_CONTADOR_KEYS.get(promo)
         lot_kwargs = {
             "dinero_ingresado": precio,
             "fichas_promocion": fichas,
         }
-        if promo in promo_contadores:
-            self._increment_contador_operacion(promo_contadores[promo], 1)
-            lot_kwargs[promo_contadores[promo]] = 1
-            # Estos labels fueron diseñados para mostrar solo el valor numérico.
-            self.contadores_labels[promo_contadores[promo]].config(text=f"{self.contadores[promo_contadores[promo]]}")
+        if promo_key:
+            self._increment_contador_operacion(promo_key, 1)
+            lot_kwargs[promo_key] = 1
+            self.contadores_labels[promo_key].config(text=f"{self.contadores[promo_key]}")
         else:
             messagebox.showerror("Error", "Promoción no válida.")
             return

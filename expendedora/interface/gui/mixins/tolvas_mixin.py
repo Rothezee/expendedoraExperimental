@@ -278,10 +278,7 @@ class TolvasMixin:
         # Mantener el label grande de "Fichas Restantes" sincronizado aunque
         # el callback del core se pierda por cualquier motivo.
         try:
-            self.contadores["fichas_restantes"] = pendientes
-            label = self.contadores_labels.get("fichas_restantes")
-            if label is not None:
-                label.config(text=f"{pendientes}")
+            self._actualizar_fichas_restantes_label(pendientes)
         except Exception:
             pass
         if self._ultimo_evento_core_ts:

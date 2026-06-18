@@ -25,6 +25,9 @@ class _PromoGuiStub(OperationsMixin):
         self.contadores_parcial = {"dinero_ingresado": 0.0}
         self.contadores_global = {"dinero_ingresado": 0.0}
 
+    def _actualizar_fichas_restantes_label(self, pendientes: int) -> None:
+        self.contadores["fichas_restantes"] = int(pendientes)
+
 
 class PromoTriggerTest(unittest.TestCase):
     def test_fichas_desde_config_entero(self):

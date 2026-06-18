@@ -7,6 +7,8 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 import requests
 
+from expendedora.persistence.remote.url_utils import es_url_local
+
 
 class SessionApiRepository:
     def __init__(self, config_repository, auth_repository=None) -> None:
@@ -22,11 +24,6 @@ class SessionApiRepository:
 
         return TelemetryRepository._build_headers(self._config_repo.load())
 
-    @staticmethod
-    def _is_local_base_url(base_url: str) -> bool:
-        lower = str(base_url or "").lower()
-        return "127.0.0.1" in lower or "localhost" in lower
-
     def _iter_backend_targets(self, local_path: str, cloud_path: str) -> Iterable[Tuple[str, str]]:
         config = self._config_repo.load()
         api = config.get("api", {})
@@ -37,7 +34,7 @@ class SessionApiRepository:
             normalized = str(base).strip().rstrip("/")
             if not normalized:
                 continue
-            if self._is_local_base_url(normalized):
+            if es_url_local(normalized):
                 endpoint = str(local_path).strip().lstrip("/")
                 scope = "local"
             else:

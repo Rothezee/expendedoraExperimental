@@ -12,6 +12,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from expendedora.interface.auth import UserManagement
 from expendedora.interface.gui import ExpendedoraGUI
+from expendedora.interface.kiosk_env import kiosk_mode_habilitado
 from expendedora.logic.application.bootstrap import create_app_controller
 
 
@@ -72,10 +73,6 @@ def main(user_session):
         _trace("main() end")
 
 
-def _kiosk_mode_enabled() -> bool:
-    return str(os.environ.get("EXPENDEDORA_KIOSK", "")).strip().lower() in ("1", "true", "yes", "on")
-
-
 def _kiosk_session_user() -> str:
     explicit = str(os.environ.get("EXPENDEDORA_KIOSK_USER", "")).strip()
     if explicit:
@@ -105,7 +102,7 @@ def run_kiosk_autostart():
 
 def run_kiosk_loop():
     """Orquesta login -> app principal evitando árboles Tk anidados."""
-    if _kiosk_mode_enabled():
+    if kiosk_mode_habilitado():
         run_kiosk_autostart()
         return
     while True:

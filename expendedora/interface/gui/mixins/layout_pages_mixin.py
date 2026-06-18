@@ -141,7 +141,6 @@ class LayoutPagesMixin:
                     self.contadores_labels[key] = label_valor
 
                 crear_card_contador(self.info_frame, "fichas_restantes", "Fichas Restantes", self.colors["primary"], fixed_height=150)
-                # crear_card_contador(self.info_frame, "fichas_expendidas", "Fichas Expendidas", self.colors["success"]) # Movido a Contadores
 
                 # Arrancar refresco rápido una vez que el label grande ya existe.
                 self._start_fast_status_poll()
